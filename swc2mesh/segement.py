@@ -243,8 +243,8 @@ class Frustum(Geom):
         points = self._rotation.T @ points
         
         # top
-        top_mask = points[2, :] >= self.len_axis
-        dist = LA.norm(points - np.array([[0,0,self.len_axis]]).T, axis=0)
+        top_mask = points[2, :] >= self.h
+        dist = LA.norm(points - np.array([[0,0,self.h]]).T, axis=0)
         dist = dist - self.rb
         top_in, top_on, top_out = \
             self._create_masks(top_mask, dist, eps)
@@ -254,7 +254,7 @@ class Frustum(Geom):
         bottom_in, bottom_on, bottom_out = \
             self._create_masks(bottom_mask, dist, eps)
         # lateral
-        lateral_mask = (points[2, :] > 0) & (points[2, :] < self.len_axis)
+        lateral_mask = (points[2, :] > 0) & (points[2, :] < self.h)
         dist = LA.norm(points[:2, :], axis=0) - self._r(points[2, :])
         lateral_in, lateral_on, lateral_out = \
             self._create_masks(lateral_mask, dist, eps)
@@ -279,7 +279,7 @@ class Frustum(Geom):
         """
         # translate points to local coordinate system
         points = self._rotation.T @ (points - self._translation)
-        points[2, :] -= self.len_axis / 2
+        points[2, :] -= self.h / 2
         normals = self._rotation.T @ normals
         # fix normals
         cos_angle = np.einsum('ij,ij->j', points, normals)
@@ -297,13 +297,13 @@ class Frustum(Geom):
         Returns:
             float or ndarray: lateral circle radius.
         """
-        return self.ra + (self.rb - self.ra) * z / self.len_axis
+        return self.ra + (self.rb - self.ra) * z / self.h
 
-    def _create_points(self, frus_pdensity = 1.0):
+    def _create_points(self, density = 1.0):
         """Create points and normals on frustum surface.
 
         Args:
-            frus_pdensity (float, optional):
+            density (float, optional):
                 Number of points per unit area (approximately).
                 Defaults to 1.0.
 
@@ -312,25 +312,15 @@ class Frustum(Geom):
                 `points`: coordinates of sampled points,
                 `normals`: out-pointing normal vectors.
         """
-        # number of layers on the lateral surface
-        nlayer = frus_pdensity * np.max([int(self.len_axis), 5])
-        # need more layers to improve mesh quality
-        nlayer *= 4
-        # number of points on a lateral layer
-        ncircle = frus_pdensity * np.max([int(np.pi * (self.ra + self.rb)), 16])
-        # number of points on the bottom and top semispheres
-        nsphere = frus_pdensity * int(np.pi * (self.ra + self.rb)**2 / 2)
-        nsphere = np.max([nsphere, 64])
-
         # create points on local frustum
         points, normals = \
-            self._create_local_frustum(int(nlayer), int(ncircle), int(nsphere))
+            self._create_local_frustum(density)
         # move the local frustum
         points = self._rotation @ points + self._translation
         normals = self._rotation @ normals
         return points, normals
 
-    def _create_local_frustum(self, nlayer, ncircle, nsphere):
+    def _create_local_frustum(self, density):
         """Create frustum in its local coordinate system. 
             Bottom center is origin and axis is z-axis.
 
@@ -347,38 +337,48 @@ class Frustum(Geom):
                 `points`: coordinates of sampled points,
                 `normals`: out-pointing normal vectors.
         """
-        # get radii of lateral circles
-        samples = np.linspace(0, self.len_axis, nlayer, endpoint=False) \
-            + self.len_axis / nlayer / 2
-        rs = self._r(samples)
         # get lateral points and normals
-        points_lateral = np.empty((3, ncircle * nlayer))
-        normals_lateral = np.empty((3, ncircle * nlayer))
-        theta0 = np.linspace(0, 2*np.pi, ncircle, endpoint=False)
-        for ind, ir in enumerate(rs):
-            if ind % 2:
-                theta = theta0 + np.pi / ncircle
-            else:
-                theta = theta0
-            indices = np.arange(ind*ncircle, (ind + 1)*ncircle)
-            points_lateral[0, indices] = ir * np.cos(theta)
-            points_lateral[1, indices] = ir * np.sin(theta)
-            points_lateral[2, indices] = samples[ind]
-            normals_lateral[:, indices] = self._rotate_local_normal(
-                theta, self.local_lateral_normal)
-
-        # get sphere
-        sphere = unitsphere(2 * nsphere)
+        npoint_lateral = int(density * self.lateral_area)
+        npoint_lateral = np.max([npoint_lateral, 64])
+        points_lateral, theta = self.unitfrustum(npoint_lateral)        
+        normals_lateral = self._rotate_local_normal(
+            theta, self.local_lateral_normal)
         # get top sphere
+        nsphere = int(density * self.top_area)
+        nsphere = np.max([npoint_lateral, 32])
+        sphere = unitsphere(2 * nsphere)
         points_top = self.rb * sphere[:, :nsphere]
-        points_top[2, :] += self.len_axis
+        points_top[2, :] += self.h
         normals_top = sphere[:, :nsphere]
         # get bottom sphere
+        nsphere = int(density * self.bottom_area)
+        nsphere = np.max([npoint_lateral, 32])
+        sphere = unitsphere(2 * nsphere)
         points_bottom = self.ra * sphere[:, nsphere:]
         normals_bottom = sphere[:, nsphere:]
+        # get top junction
+        npoint_junc_top = 10 * int(density * 2*np.pi * self.rb)
+        npoint_junc_top = np.max([npoint_junc_top, 32])
+        normals_junc_top, theta = unitcircle(npoint_junc_top)
+        points_junc_top = self.rb * normals_junc_top
+        points_junc_top[2, :] += self.h
+        normals_junc_top2 = self._rotate_local_normal(theta, self.local_lateral_normal)
+        normals_junc_top += normals_junc_top2
+        normals_junc_top = normals_junc_top / LA.norm(normals_junc_top, axis=0)
+        # get bottom junction
+        npoint_junc_bottom = 10 * int(density * 2*np.pi * self.ra)
+        npoint_junc_bottom = np.max([npoint_junc_bottom, 32])
+        normals_junc_bottom, theta = unitcircle(npoint_junc_bottom)
+        points_junc_bottom = self.ra * normals_junc_bottom
+        normals_junc_bottom2 = self._rotate_local_normal(theta, self.local_lateral_normal)
+        normals_junc_bottom += normals_junc_bottom2
+        normals_junc_bottom = normals_junc_bottom / LA.norm(normals_junc_bottom, axis=0)
+
         # assemble points and normals
-        points = np.hstack((points_top, points_lateral, points_bottom))
-        normals = np.hstack((normals_top, normals_lateral, normals_bottom))
+        points = np.hstack((points_top, points_junc_top, points_lateral,
+            points_junc_bottom, points_bottom))
+        normals = np.hstack((normals_top, normals_junc_top, normals_lateral,
+            normals_junc_bottom, normals_bottom))
         return points, normals
 
     def _rotate_local_normal(self, theta, normal):
@@ -406,20 +406,88 @@ class Frustum(Geom):
         R[:, 2, 2] = 1
         return np.squeeze(R @ normals).T
 
-    @property
-    def axis(self):
-        """Frustum axis pointing from start to end.
+    def unitfrustum(self, n):
+        """Evenly distribute points on a unit frustum.
+
+        Args:
+            n (int): number of sampled points.
 
         Returns:
-            ndarray: frustum axis.
+            tuple: coordinates and angles of sampled points.
         """
+        # Create fibonacci lattice
+        x, y = fibonacci_lattice(n)
+        theta = 2 * np.pi * x
+
+        points = np.zeros([3, n])
+        rmin = np.min([self.ra, self.rb])
+        rmax = np.max([self.ra, self.rb])
+        if (rmax - rmin) / self.slant_h > 1:
+            # distribute more points on the rmax side
+            r = lambda h: rmin + (rmax - rmin) * h / self.h
+            slant_h0 = rmin * self.slant_h / (rmax - rmin)
+            # Create points
+            temp = np.sqrt(slant_h0 / (self.slant_h + slant_h0))
+            y = (self.slant_h * y + slant_h0) / (self.slant_h + slant_h0)
+            z = self.h * (np.sqrt(y) - temp) / (1 - temp)
+
+            points[0, :] = np.cos(theta) * r(z)
+            points[1, :] = np.sin(theta) * r(z)
+            points[2, :] = z
+        else:
+            z = self.h * y
+            points[0, :] = np.cos(theta) * self._r(z)
+            points[1, :] = np.sin(theta) * self._r(z)
+            points[2, :] = z
+        return points, theta
+
+    @property
+    def lateral_area(self):
+        return np.pi * self.slant_h * (self.ra + self.rb)
+
+    @property
+    def top_area(self):
+        return np.pi * self.rb**2
+
+    @property
+    def bottom_area(self):
+        return np.pi * self.ra**2
+
+    @property
+    def area(self):
+        return self.top_area + self.lateral_area + self.bottom_area
+
+    @property
+    def lateral_volume(self):
+        return np.pi*self.h*(self.ra**2 + self.rb**2 + self.ra*self.rb)/3
+
+    @property
+    def top_volume(self):
+        return 2 * np.pi * self.rb**3 /3
+
+    @property
+    def bottom_volume(self):
+        return 2 * np.pi * self.ra**3 /3
+
+    @property
+    def volume(self):
+        return self.top_volume + self.lateral_volume + self.bottom_volume
+
+    @property
+    def axis(self):
+        """Frustum axis pointing from start to end."""
         ax = self.b - self.a
         return ax
 
     @property
-    def len_axis(self):
-        """Length of frustum axis."""
+    def h(self):
+        """Height of the frustum."""
         return LA.norm(self.axis)
+
+    @property
+    def slant_h(self):
+        """Slant height of the frustum."""
+        return LA.norm([self.h, self.ra - self.rb])
 
     @property
     def local_lateral_normal(self):
@@ -430,7 +498,7 @@ class Frustum(Geom):
             ndarray: the normal vector, 
                 size: [3 x 1].
         """
-        x = np.array([self.rb-self.ra, 0, self.len_axis])
+        x = np.array([self.rb-self.ra, 0, self.h])
         x = x / LA.norm(x)
         y = np.array([0, 1, 0])
         return np.cross(y, x).T
@@ -465,25 +533,68 @@ class Frustum(Geom):
         return inner, on, outer
 
 
-def unitsphere(npoint):
-    """Create points evenly distributed on a unit sphere.
+def fibonacci_lattice(n):
+    """https://shorturl.at/cuDIW"""
+    golden_ratio = (1 + 5**0.5)/2
+    indices = np.arange(n)
+    x, _ = np.modf(indices / golden_ratio)
+    y = (indices + 0.5) / n
+    return x, y
+
+def unitsphere(n):
+    """Evenly distribute points on a unit sphere surface.
 
     Args:
-        npoint (int): number of sampled points.
+        n (int): number of sampled points.
 
     Returns:
         ndarray: coordinates of sampled points,
-            size: [3 x npoint].
+            size: [3 x n].
     """
-    # Get evenly distributed points on the unit sphere.
     # Create angles
-    golden_ratio = (1 + 5**0.5)/2
-    indices = np.arange(npoint)
-    theta = 2 * np.pi * indices / golden_ratio
-    phi = np.arccos(1 - 2 * (indices + 0.5) / npoint)
+    x, y = fibonacci_lattice(n)
+    theta = 2 * np.pi * x
+    phi = np.arccos(1 - 2 * y)
     # Create points
-    points = np.zeros([3, npoint])
+    points = np.zeros([3, n])
     points[0, :] = np.cos(theta) * np.sin(phi)
     points[1, :] = np.sin(theta) * np.sin(phi)
     points[2, :] = np.cos(phi)
     return points
+
+def unitdisk(n):
+    """Evenly distribute points on a unit disk in x-y plane.
+
+    Args:
+        n (int): number of sampled points.
+
+    Returns:
+        ndarray: coordinates of sampled points,
+            size: [3 x n].
+    """
+    # Create angles
+    x, y = fibonacci_lattice(n)
+    theta = 2 * np.pi * x
+    r = np.sqrt(y)
+    # Create points
+    points = np.zeros([3, n])
+    points[0, :] = np.cos(theta) * r
+    points[1, :] = np.sin(theta) * r
+    return points
+
+def unitcircle(n):
+    """Evenly distribute points on a unit circle in x-y plane.
+
+    Args:
+        n (int): number of sampled points.
+
+    Returns:
+        tuple: coordinates and angles of sampled points.
+    """
+    # Create angles
+    theta = np.linspace(0, 2*np.pi, n, endpoint=False)
+    # Create points
+    points = np.zeros([3, n])
+    points[0, :] = np.cos(theta)
+    points[1, :] = np.sin(theta)
+    return points, theta
