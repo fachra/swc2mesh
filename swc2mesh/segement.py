@@ -1,9 +1,8 @@
-from abc import ABC, abstractmethod
 import numpy as np
 from numpy import linalg as LA
 
 
-class Geom(ABC):
+class Geom():
     """Template for any geometry subclasses.
     
         A Geom's subclass must have three attributes/properties:
@@ -26,6 +25,7 @@ class Geom(ABC):
         self.points = None
         self.normals = None
         self.keep = None
+        self.color = None
 
     def __len__(self) -> int:
         return np.count_nonzero(self.keep)
@@ -65,16 +65,16 @@ class Geom(ABC):
     @property
     def aabb(self):
         """Axis-aligned bounding box"""
-        p, _ = self.output()
-        x = {'min': np.min(p[0,:]), 'max': np.max(p[0,:])}
-        y = {'min': np.min(p[1,:]), 'max': np.max(p[1,:])}
-        z = {'min': np.min(p[2,:]), 'max': np.max(p[2,:])}
+        if self.__len__() < 1:
+            x = {'min': -np.inf, 'max': -np.inf}
+            y = {'min': -np.inf, 'max': -np.inf}
+            z = {'min': -np.inf, 'max': -np.inf}
+        else:
+            p, _ = self.output()
+            x = {'min': np.min(p[0,:]), 'max': np.max(p[0,:])}
+            y = {'min': np.min(p[1,:]), 'max': np.max(p[1,:])}
+            z = {'min': np.min(p[2,:]), 'max': np.max(p[2,:])}
         return x, y, z
-
-    @abstractmethod
-    def intersect(self):
-        pass
-
 
 
 class Sphere(Geom):
@@ -91,20 +91,18 @@ class Sphere(Geom):
         keep (ndarray): the mask of points to keep.
             Inner points are removed.
     """
-    def __init__(self, soma, **kwargs) -> None:
+    def __init__(self, soma, density) -> None:
         """Create a sphere using soma's position and radius.
 
         Args:
             soma (dict): A dictionary with 
                 two keys: `position` and `radius`.
         """
+        super().__init__()
         self.r = soma['radius']
         self.center = soma['position'].reshape(3, 1)
-        if 'soma_pdensity' in kwargs:
-            self.points, self.normals = \
-                self._create_points(kwargs['soma_pdensity'])
-        else:
-            self.points, self.normals = self._create_points()
+        self.density = density
+        self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
 
     def intersect(self, geom, eps=1e-14):
@@ -148,20 +146,16 @@ class Sphere(Geom):
         normals[:, cos_angle<0] *= -1
         return normals
 
-    def _create_points(self, sph_pdensity = 0.25):
+    def _create_points(self):
         """Create points and normals on sphere surface.
-
-        Args:
-            sph_pdensity (float, optional): 
-                Number of points per unit area (approximately).
-                Defaults to 0.25.
 
         Returns:
             tuple: contains two ndarrays
                 `points`: coordinates of sampled points,
                 `normals`: out-pointing normal vectors.
         """
-        npoint = sph_pdensity * np.max([36*4, int(self.area)])
+        npoint = int(10 * self.density * self.area)
+        npoint = np.max([128, npoint])
         normals = unitsphere(int(npoint))
         return self.r * normals + self.center, normals
 
@@ -184,6 +178,21 @@ class Sphere(Geom):
         return 4*np.pi*self.r**3 / 3
 
 
+class Ellipsoid(Geom):
+    def __init__(self) -> None:
+        super().__init__()
+
+
+class Cylinder(Geom):
+    def __init__(self) -> None:
+        super().__init__()
+
+
+class Contour(Geom):
+    def __init__(self) -> None:
+        super().__init__()
+
+
 class Frustum(Geom):
     """Round frustum objects representing neurite segments.
 
@@ -204,7 +213,7 @@ class Frustum(Geom):
         _rotation (ndarray): matrix rotating
             the local frustum, size: [3 x 3].
     """
-    def __init__(self, start, end, **kwargs) -> None:
+    def __init__(self, start, end, density) -> None:
         """Create a round frustum.
 
         Args:
@@ -213,16 +222,15 @@ class Frustum(Geom):
             end (dict): end defines frustum's top.
                 A dictionary with two keys: `position` and `radius`.
         """
+        super().__init__()
         self.ra = start['radius']
         self.rb = end['radius']
         self.a = start['position'].reshape(3, 1)
         self.b = end['position'].reshape(3, 1)
         self._translation = self.a
         self._rotation = self.rotation_matrix
-        if 'frus_pdensity' in kwargs:
-            self.points, self.normals = self._create_points(kwargs['frus_pdensity'])
-        else:
-            self.points, self.normals = self._create_points()
+        self.density = density
+        self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
 
     def intersect(self, geom, eps=1e-14):
@@ -299,13 +307,8 @@ class Frustum(Geom):
         """
         return self.ra + (self.rb - self.ra) * z / self.h
 
-    def _create_points(self, density = 1.0):
+    def _create_points(self):
         """Create points and normals on frustum surface.
-
-        Args:
-            density (float, optional):
-                Number of points per unit area (approximately).
-                Defaults to 1.0.
 
         Returns:
             tuple: contains two ndarrays
@@ -313,14 +316,13 @@ class Frustum(Geom):
                 `normals`: out-pointing normal vectors.
         """
         # create points on local frustum
-        points, normals = \
-            self._create_local_frustum(density)
+        points, normals = self._create_local_frustum()
         # move the local frustum
         points = self._rotation @ points + self._translation
         normals = self._rotation @ normals
         return points, normals
 
-    def _create_local_frustum(self, density):
+    def _create_local_frustum(self):
         """Create frustum in its local coordinate system. 
             Bottom center is origin and axis is z-axis.
 
@@ -338,26 +340,34 @@ class Frustum(Geom):
                 `normals`: out-pointing normal vectors.
         """
         # get lateral points and normals
-        npoint_lateral = int(density * self.lateral_area)
-        npoint_lateral = np.max([npoint_lateral, 64])
-        points_lateral, theta = self.unitfrustum(npoint_lateral)        
+        npoint_lateral = int(25 * self.density * self.lateral_area 
+                    * np.sqrt(self.h/np.min([self.ra,self.rb])))
+        with open('info_lateral.txt', 'a') as f:
+            f.write(f'npoint: {npoint_lateral}\n')
+            f.write(f'area: {self.area}\n')
+            f.write(f'h/r: {self.h/np.min([self.ra,self.rb])}\n')
+            f.write(f'r: {np.min([self.ra,self.rb])}\n')
+
+        npoint_lateral = np.max([npoint_lateral, 256])
+        npoint_lateral = np.min([npoint_lateral, 5000])
+        points_lateral, theta = self._unitfrustum(npoint_lateral)        
         normals_lateral = self._rotate_local_normal(
             theta, self.local_lateral_normal)
         # get top sphere
-        nsphere = int(density * self.top_area)
-        nsphere = np.max([npoint_lateral, 32])
+        nsphere = int(self.density * self.top_area)
+        nsphere = np.max([npoint_lateral, 64])
         sphere = unitsphere(2 * nsphere)
         points_top = self.rb * sphere[:, :nsphere]
         points_top[2, :] += self.h
         normals_top = sphere[:, :nsphere]
         # get bottom sphere
-        nsphere = int(density * self.bottom_area)
-        nsphere = np.max([npoint_lateral, 32])
+        nsphere = int(self.density * self.bottom_area)
+        nsphere = np.max([npoint_lateral, 64])
         sphere = unitsphere(2 * nsphere)
         points_bottom = self.ra * sphere[:, nsphere:]
         normals_bottom = sphere[:, nsphere:]
         # get top junction
-        npoint_junc_top = 10 * int(density * 2*np.pi * self.rb)
+        npoint_junc_top = 10 * int(self.density * 2*np.pi * self.rb)
         npoint_junc_top = np.max([npoint_junc_top, 32])
         normals_junc_top, theta = unitcircle(npoint_junc_top)
         points_junc_top = self.rb * normals_junc_top
@@ -366,7 +376,7 @@ class Frustum(Geom):
         normals_junc_top += normals_junc_top2
         normals_junc_top = normals_junc_top / LA.norm(normals_junc_top, axis=0)
         # get bottom junction
-        npoint_junc_bottom = 10 * int(density * 2*np.pi * self.ra)
+        npoint_junc_bottom = 10 * int(self.density * 2*np.pi * self.ra)
         npoint_junc_bottom = np.max([npoint_junc_bottom, 32])
         normals_junc_bottom, theta = unitcircle(npoint_junc_bottom)
         points_junc_bottom = self.ra * normals_junc_bottom
@@ -406,7 +416,7 @@ class Frustum(Geom):
         R[:, 2, 2] = 1
         return np.squeeze(R @ normals).T
 
-    def unitfrustum(self, n):
+    def _unitfrustum(self, n):
         """Evenly distribute points on a unit frustum.
 
         Args:
@@ -423,55 +433,22 @@ class Frustum(Geom):
         rmin = np.min([self.ra, self.rb])
         rmax = np.max([self.ra, self.rb])
         if (rmax - rmin) / self.slant_h > 1:
-            # distribute more points on the rmax side
             r = lambda h: rmin + (rmax - rmin) * h / self.h
-            slant_h0 = rmin * self.slant_h / (rmax - rmin)
-            # Create points
-            temp = np.sqrt(slant_h0 / (self.slant_h + slant_h0))
-            y = (self.slant_h * y + slant_h0) / (self.slant_h + slant_h0)
+            slant = rmin * self.slant_h / (rmax - rmin)
+            # Create points, distribute more points on the rmax side
+            temp = np.sqrt(slant / (self.slant_h + slant))
+            y = (self.slant_h * y + slant) / (self.slant_h + slant)
             z = self.h * (np.sqrt(y) - temp) / (1 - temp)
-
             points[0, :] = np.cos(theta) * r(z)
             points[1, :] = np.sin(theta) * r(z)
             points[2, :] = z
         else:
+            # frustum is similar to a cylinder
             z = self.h * y
             points[0, :] = np.cos(theta) * self._r(z)
             points[1, :] = np.sin(theta) * self._r(z)
             points[2, :] = z
         return points, theta
-
-    @property
-    def lateral_area(self):
-        return np.pi * self.slant_h * (self.ra + self.rb)
-
-    @property
-    def top_area(self):
-        return np.pi * self.rb**2
-
-    @property
-    def bottom_area(self):
-        return np.pi * self.ra**2
-
-    @property
-    def area(self):
-        return self.top_area + self.lateral_area + self.bottom_area
-
-    @property
-    def lateral_volume(self):
-        return np.pi*self.h*(self.ra**2 + self.rb**2 + self.ra*self.rb)/3
-
-    @property
-    def top_volume(self):
-        return 2 * np.pi * self.rb**3 /3
-
-    @property
-    def bottom_volume(self):
-        return 2 * np.pi * self.ra**3 /3
-
-    @property
-    def volume(self):
-        return self.top_volume + self.lateral_volume + self.bottom_volume
 
     @property
     def axis(self):
@@ -523,6 +500,38 @@ class Frustum(Geom):
         else:
             R = 2  * (c @ c.T).T / (c.T @ c) - np.eye(3)
         return R
+
+    @property
+    def lateral_area(self):
+        return np.pi * self.slant_h * (self.ra + self.rb)
+
+    @property
+    def top_area(self):
+        return np.pi * self.rb**2
+
+    @property
+    def bottom_area(self):
+        return np.pi * self.ra**2
+
+    @property
+    def area(self):
+        return self.top_area + self.lateral_area + self.bottom_area
+
+    @property
+    def lateral_volume(self):
+        return np.pi*self.h*(self.ra**2 + self.rb**2 + self.ra*self.rb)/3
+
+    @property
+    def top_volume(self):
+        return 2 * np.pi * self.rb**3 /3
+
+    @property
+    def bottom_volume(self):
+        return 2 * np.pi * self.ra**3 /3
+
+    @property
+    def volume(self):
+        return self.top_volume + self.lateral_volume + self.bottom_volume
     
     @staticmethod
     def _create_masks(mask, dist, eps):
@@ -534,7 +543,7 @@ class Frustum(Geom):
 
 
 def fibonacci_lattice(n):
-    """https://shorturl.at/cuDIW"""
+    """http://extremelearning.com.au/evenly-distributing-points-on-a-sphere/"""
     golden_ratio = (1 + 5**0.5)/2
     indices = np.arange(n)
     x, _ = np.modf(indices / golden_ratio)
@@ -598,3 +607,70 @@ def unitcircle(n):
     points[0, :] = np.cos(theta)
     points[1, :] = np.sin(theta)
     return points, theta
+
+def ellipsoid(n, a, b, c):
+    """Evenly distribute points on an ellipsoid surface.
+
+        Ellipsoid surface is:
+            x^2/a^2 + y^2/b^2 + z^2/c^2 = 1
+
+    Args:
+        n (int): number of sampled points.
+        a (float): semi-axis length.
+        b (float): semi-axis length.
+        c (float): semi-axis length.
+
+    Returns:
+        tuple:
+            coordinates of sampled points and their normals.
+    """
+    if a!=0 and b!=0 and c!=0:
+        axes = np.abs([[a, b, c]]).T
+        points = unitsphere(n) * axes
+        normals = points / axes**2
+    else:
+        raise ValueError('Invalid ellipsoid axis length.')
+    return points, normals
+
+def cylinder(n, r, h, only_lateral=True):
+    """Evenly distribute points on a cylinder surface.
+
+        Cylinder lateral surfaceis defined by:
+            x^2/r^2 + y^2/r^2 = 1,
+            z in range(-h/2, h/2).
+
+    Args:
+        n (int): number of sampled points.
+        r (float): cylinder radius.
+        h (float): cylinder height.
+        only_lateral (bool): only include lateral surface.
+
+    Returns:
+        tuple: coordinates of sampled points and their normals.
+    """
+    if not only_lateral:
+        n_disk = int(n*r/(h+r)/2)
+        n -= 2*n_disk
+    if r!=0 and h!=0:
+        r, h = np.abs(r), np.abs(h)
+        # Create angles
+        x, y = fibonacci_lattice(n)
+        theta = 2 * np.pi * x
+        z = h * (y - 0.5)
+        # Create points and normals
+        normals = np.zeros([3, n])
+        normals[0, :] = np.cos(theta)
+        normals[1, :] = np.sin(theta)
+        normals[2, :] = 0
+        points = r * normals
+        points[2, :] = z
+        if not only_lateral:
+            points_bottom = unitdisk(n_disk) - np.array([[0,0,h/2]]).T
+            normals_bottom = np.zeors((3, n_disk))
+            normals_bottom[2, :] = -1
+            points_top = unitdisk(n_disk) + np.array([[0,0,h/2]]).T
+            normals_top = np.zeors((3, n_disk))
+            normals_top[2, :] = 1
+    else:
+        raise ValueError('Invalid cylinder parameters.')
+    return points, normals

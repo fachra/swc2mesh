@@ -127,3 +127,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# meshes
+*.stl
+*.obj
+*.ply
+
+# others
+*.m
+*.swc
