@@ -29,19 +29,6 @@ class Geom():
 
     def __len__(self) -> int:
         return np.count_nonzero(self.keep)
-
-    def fast_intersect(self, geom):
-        """Axis-aligned bounding box collision detection."""
-        xa, ya, za = self.aabb
-        xb, yb, zb = geom.aabb
-        if xa['max'] <= xb['min'] or xa['min'] >= xb['max'] \
-            or ya['max'] <= yb['min'] or ya['min'] >= yb['max'] \
-            or za['max'] <= zb['min'] or za['min'] >= zb['max']:
-            # no collision
-            return False
-        else:
-            # collision detected
-            return True
     
     def update(self, mask) -> None:
         """Update the mask `keep`.
@@ -179,8 +166,19 @@ class Sphere(Geom):
 
 
 class Ellipsoid(Geom):
-    def __init__(self) -> None:
+    def __init__(self, soma) -> None:
         super().__init__()
+        # check soma list
+
+    @property
+    def area(self):
+        """Ellipsoid area."""
+        return 4*np.pi*self.r**2
+
+    @property
+    def volume(self):
+        """Ellipsoid volume."""
+        return 4*np.pi*self.r**2
 
 
 class Cylinder(Geom):
@@ -340,28 +338,26 @@ class Frustum(Geom):
                 `normals`: out-pointing normal vectors.
         """
         # get lateral points and normals
-        npoint_lateral = int(25 * self.density * self.lateral_area 
+        if np.min([self.ra,self.rb]) < 0.3:
+            npoint_lateral = int(10 * self.density * self.lateral_area 
                     * np.sqrt(self.h/np.min([self.ra,self.rb])))
-        with open('info_lateral.txt', 'a') as f:
-            f.write(f'npoint: {npoint_lateral}\n')
-            f.write(f'area: {self.area}\n')
-            f.write(f'h/r: {self.h/np.min([self.ra,self.rb])}\n')
-            f.write(f'r: {np.min([self.ra,self.rb])}\n')
-
+        else:
+            npoint_lateral = int(self.density * self.lateral_area 
+                    * np.sqrt(self.h/np.min([self.ra,self.rb])))
         npoint_lateral = np.max([npoint_lateral, 256])
-        npoint_lateral = np.min([npoint_lateral, 5000])
+        npoint_lateral = np.min([npoint_lateral, 10000])
         points_lateral, theta = self._unitfrustum(npoint_lateral)        
         normals_lateral = self._rotate_local_normal(
             theta, self.local_lateral_normal)
         # get top sphere
-        nsphere = int(self.density * self.top_area)
+        nsphere = int(self.density * self.top_area / 2)
         nsphere = np.max([npoint_lateral, 64])
         sphere = unitsphere(2 * nsphere)
         points_top = self.rb * sphere[:, :nsphere]
         points_top[2, :] += self.h
         normals_top = sphere[:, :nsphere]
         # get bottom sphere
-        nsphere = int(self.density * self.bottom_area)
+        nsphere = int(self.density * self.bottom_area / 2)
         nsphere = np.max([npoint_lateral, 64])
         sphere = unitsphere(2 * nsphere)
         points_bottom = self.ra * sphere[:, nsphere:]
