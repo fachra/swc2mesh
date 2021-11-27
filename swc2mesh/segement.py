@@ -665,7 +665,8 @@ class Frustum(Geom):
                 `normals`: out-pointing normal vectors.
         """
         # number of lateral points
-        npoint_lateral = int(self.density*20*(10 + self.h))
+        npoint_lateral = int(self.density*16*(10 + 5*self.h))
+        npoint_lateral = np.max([npoint_lateral, 200])
         # create lateral points and normals
         points_lateral, theta = self._localfrustum(npoint_lateral)        
         normals_lateral = self._rotate_local_normal(

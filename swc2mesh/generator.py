@@ -191,7 +191,7 @@ class Swc2mesh():
         ms.add_mesh(m)
         print('build mesh')
         s = time.time()
-        ms.surface_reconstruction_screened_poisson(depth=13)
+        ms.surface_reconstruction_screened_poisson(depth=15)
         print(time.time() - s)
         # ms = self._post_cleaning(ms)
         # ms = self._simplification(ms)
