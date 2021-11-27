@@ -1,5 +1,7 @@
 import numpy as np
 from numpy import linalg as LA
+from copy import deepcopy as dcp
+import pymeshlab as mlab
 
 
 class Geom():
@@ -25,18 +27,37 @@ class Geom():
         self.points = None
         self.normals = None
         self.keep = None
-        self.color = None
 
-    def __len__(self) -> int:
-        return np.count_nonzero(self.keep)
+    def intersect(self, geom, eps=1e-14):
+        """Check intersection with another geometry."""
+        raise NotImplementedError
+
+    def fix_normals(self, points, normals):
+        """Flip inward normal vectors."""
+        raise NotImplementedError
     
-    def update(self, mask) -> None:
-        """Update the mask `keep`.
+    def _create_points(self):
+        """Create points and normals on geom surface."""
+        raise NotImplementedError
+    
+    @property
+    def area(self):
+        raise NotImplementedError
+
+    @property
+    def volume(self):
+        raise NotImplementedError
+
+    def update(self, mask, on=None) -> None:
+        """Update the mask `keep` and 'normals'.
 
         Args:
             mask (ndarray): mask of points.
+            on (ndarray): mask of on-boundary points.
         """
         self.keep = np.logical_and(self.keep, mask.reshape(-1))
+        if on is not None:
+            self.normals[:, on] = 0
 
     def output(self):
         """Output all valid points.
@@ -48,6 +69,9 @@ class Geom():
         p = self.points[:, self.keep]
         n = self.normals[:, self.keep]
         return p, n
+
+    def __len__(self) -> int:
+        return np.count_nonzero(self.keep)
 
     @property
     def aabb(self):
@@ -148,47 +172,350 @@ class Sphere(Geom):
 
     @property
     def area(self):
-        """Sphere area.
-
-        Returns:
-            float: area.
-        """
+        """Sphere area."""
         return 4*np.pi*self.r**2
 
     @property
     def volume(self):
-        """Sphere volume.
-
-        Returns:
-            float: volume.
-        """
+        """Sphere volume."""
         return 4*np.pi*self.r**3 / 3
 
 
 class Ellipsoid(Geom):
-    def __init__(self, soma) -> None:
+    def __init__(self, soma, density) -> None:
         super().__init__()
-        # check soma list
+        self.center = soma[0]['position'].reshape(3, 1)
+        # axes
+        self.a = soma[0]['radius']
+        self.b = self.a
+        self.c_axis = soma[1]['position'] - soma[2]['position']
+        self.c_axis = self.c_axis.reshape(3, 1)
+        self.c = LA.norm(self.c_axis) / 2
+        # translation
+        self._translation = self.center
+        self._rotation = self.rotation_matrix
+        self.density = density
+        self.points, self.normals = self._create_points()
+        self.keep = np.full(self.points.shape[1], True)
+
+    def intersect(self, geom, eps=1e-14):
+        """Check intersection with another geometry.
+
+        Args:
+            geom (Geom): another geometry.
+            eps (float, optional): margin of the boundary. Defaults to 1e-14.
+
+        Returns:
+            tuple: contains three masks
+                `inner`: mask of inner points;
+                `on`: mask of points on the boundary;
+                `outer`: mask of outer points.
+        """
+        # transform points to local coordinate
+        points = self._rotation.T @ (geom.points - self._translation)
+        
+        axes = np.abs([[self.a, self.b, self.c]]).T
+        dist = LA.norm(points / axes, axis=0) - 1
+        # masks
+        inner = dist <= -eps
+        on = (dist > -eps) & (dist < eps)
+        outer = dist >= eps
+        return inner, on, outer
+
+    def fix_normals(self, points, normals):
+        """Flip inward normal vectors.
+
+        Args:
+            points (ndarray): coordinates of points,
+                size [3 x npoint].
+            normals (ndarray): normal vectors, 
+                size [3 x npoint].
+
+        Returns:
+            ndarray: fixed normal vectors.
+        """
+        # translate points to local coordinate system
+        points = self._rotation.T @ (points - self._translation)
+        normals = self._rotation.T @ normals
+        # fix normals
+        cos_angle = np.einsum('ij,ij->j', points, normals)
+        normals[:, cos_angle<0] *= -1
+        # rotate normals back to global coordinate system
+        return self._rotation @ normals
+
+    def _create_points(self):
+        npoint = int(10 * self.density * self.area)
+        npoint = np.max([128, npoint])
+        points, normals = ellipsoid(npoint, self.a, self.b, self.c)
+        # move the local ellipsoid
+        points = self._rotation @ points + self._translation
+        normals = self._rotation @ normals
+        return points, normals
+
+    @property
+    def rotation_matrix(self):
+        """Create rotation matrix transforming z-axis to ellipsoid's c-axis.
+
+        Returns:
+            ndarray: rotation matrix,
+                size: [3 x 3].
+        """
+        # compute rotation matrix to transform z to c-axis
+        z = np.array([[0, 0, 1]]).T
+        ax = self.c_axis / (self.c * 2)
+        c = ax + z
+        # R: matrix transforming z to c-axis
+        if LA.norm(c) < 1e-12:
+            # ax = -z
+            R = np.eye(3)
+            R[2, 2] = -1
+        else:
+            R = 2  * (c @ c.T).T / (c.T @ c) - np.eye(3)
+        return R
 
     @property
     def area(self):
-        """Ellipsoid area."""
-        return 4*np.pi*self.r**2
+        """
+        Ellipsoid area.
+        https://en.wikipedia.org/wiki/Ellipsoid#Approximate_formula
+        """
+        p = 1.6075
+        s = 4 * np.pi * ((self.a*self.b)**p / 3 \
+            + (self.a*self.c)**p / 3 \
+            + (self.b*self.c)**p / 3)**(1/p) 
+        return s
 
     @property
     def volume(self):
         """Ellipsoid volume."""
-        return 4*np.pi*self.r**2
+        vol = 4*np.pi*self.a*self.b*self.c/3
+        return vol
 
 
 class Cylinder(Geom):
-    def __init__(self) -> None:
+    def __init__(self, soma, density) -> None:
         super().__init__()
+        self.center = soma[0]['position'].reshape(3, 1)
+        self.r = soma[0]['radius']
+        self.axis = soma[1]['position'] - soma[2]['position']
+        self.axis = self.axis.reshape(3, 1)
+        self.h = LA.norm(self.axis)
+        # translation
+        self._translation = self.center
+        self._rotation = self.rotation_matrix
+        self.density = density
+        self.points, self.normals = self._create_points()
+        self.keep = np.full(self.points.shape[1], True)
 
+    def intersect(self, geom, eps=1e-14):
+        """Check intersection with another geometry.
+
+        Args:
+            geom (Geom): another geometry.
+            eps (float, optional): margin of the boundary. Defaults to 1e-14.
+
+        Returns:
+            tuple: contains three masks
+                `inner`: mask of inner points;
+                `on`: mask of points on the boundary;
+                `outer`: mask of outer points.
+        """
+        # transform points to local coordinate
+        points = self._rotation.T @ (geom.points - self._translation)
+        dist = LA.norm(points[:2, :], axis=0) - self.r
+        mask_in = (points[3, :] <= self.h/2) & (points[3, :] >= -self.h/2)
+        # masks
+        inner = mask_in & (dist <= -eps)
+        on = mask_in & (dist > -eps) & (dist < eps)
+        outer = (dist >= eps) | ~mask_in
+        return inner, on, outer
+
+    def fix_normals(self, points, normals):
+        """Flip inward normal vectors.
+
+        Args:
+            points (ndarray): coordinates of points,
+                size [3 x npoint].
+            normals (ndarray): normal vectors, 
+                size [3 x npoint].
+
+        Returns:
+            ndarray: fixed normal vectors.
+        """
+        # translate points to local coordinate system
+        points = self._rotation.T @ (points - self._translation)
+        normals = self._rotation.T @ normals
+        # fix normals
+        cos_angle = np.einsum('ij,ij->j', points, normals)
+        normals[:, cos_angle<0] *= -1
+        # rotate normals back to global coordinate system
+        return self._rotation @ normals
+
+    def _create_points(self):
+        npoint = int(10 * self.density * self.area)
+        npoint = np.max([128, npoint])
+        points, normals = cylinder(npoint, self.r, self.h)
+        # move the local cylinder
+        points = self._rotation @ points + self._translation
+        normals = self._rotation @ normals
+        return points, normals
+
+    @property
+    def rotation_matrix(self):
+        """Create rotation matrix transforming z-axis to cylinder's axis.
+
+        Returns:
+            ndarray: rotation matrix,
+                size: [3 x 3].
+        """
+        # compute rotation matrix to transform z to axis
+        z = np.array([[0, 0, 1]]).T
+        ax = self.axis / self.h
+        c = ax + z
+        # R: matrix transforming z to axis
+        if LA.norm(c) < 1e-12:
+            # ax = -z
+            R = np.eye(3)
+            R[2, 2] = -1
+        else:
+            R = 2  * (c @ c.T).T / (c.T @ c) - np.eye(3)
+        return R
+
+    @property
+    def area(self):
+        """Cylinder area."""
+        s = 2*np.pi*self.r**2 + 2*np.pi*self.r*self.h 
+        return s
+
+    @property
+    def volume(self):
+        """Cylinder volume."""
+        return np.pi*self.r**2*self.h
 
 class Contour(Geom):
-    def __init__(self) -> None:
+    def __init__(self, soma, density) -> None:
         super().__init__()
+        self.center = soma[0]['position'].reshape(3, 1)
+        self._translation = self.center
+        self.density = density
+        self.points, self.normals = self._create_points(soma)
+        self._geometric_measures = self.geometric_measures
+        self.keep = np.full(self.points.shape[1], True)
+
+    def intersect(self, geom, eps=1e-14):
+        """Check intersection with another geometry.
+
+        Args:
+            geom (Geom): another geometry.
+            eps (float, optional): margin of the boundary. Defaults to 1e-14.
+
+        Returns:
+            tuple: contains three masks
+                `inner`: mask of inner points;
+                `on`: mask of points on the boundary;
+                `outer`: mask of outer points.
+        """
+        # transform points to local coordinate
+        ms = mlab.MeshSet()
+        mref = mlab.Mesh(
+            vertex_matrix = self.points.T,
+            v_normals_matrix = self.normals.T
+            )
+        m = mlab.Mesh(
+            vertex_matrix = geom.points.T
+            )
+        ms.add_mesh(mref)
+        ms.add_mesh(m)
+        ms.distance_from_reference_mesh(measuremesh=1, refmesh=0)
+        dist = ms.mesh(1).vertex_quality_array()
+        # masks
+        inner = dist <= -eps
+        on = (dist > -eps) & (dist < eps)
+        outer = dist >= eps
+        return inner, on, outer
+
+    def fix_normals(self, points, normals):
+        """Flip inward normal vectors.
+
+        Args:
+            points (ndarray): coordinates of points,
+                size [3 x npoint].
+            normals (ndarray): normal vectors, 
+                size [3 x npoint].
+
+        Returns:
+            ndarray: fixed normal vectors.
+        """
+        # translate points to local coordinate system
+        points = points - self._translation
+        # fix normals
+        cos_angle = np.einsum('ij,ij->j', points, normals)
+        normals[:, cos_angle<0] *= -1
+        return normals
+
+    def _create_points(self, soma):
+        p = []
+        parent_id = 0
+        for child_id in soma[parent_id]['children_id']:
+            if child_id < len(soma):
+                self._add_points(p, soma, parent_id, child_id)
+        p = np.hstack(p)
+        # create convex hull
+        ms = mlab.MeshSet()
+        m = mlab.Mesh(vertex_matrix = p.T)
+        ms.add_mesh(m)
+        ms.convex_hull()
+        out_dict = ms.compute_geometric_measures()
+        ms.poisson_disk_sampling(
+            samplenum = int(10*self.density*out_dict['surface_area'])
+        )
+        points = ms.current_mesh().vertex_matrix().T
+        normals = ms.current_mesh().vertex_normal_matrix().T
+        # move points to center
+        points = points - out_dict['barycenter'].reshape(3,1) + self.center
+        # flip inward-pointing normals
+        normals = self.fix_normals(points, normals)
+        return points, normals
+
+    def _add_points(self, points, soma, parent_id, child_id):
+        # build cylinder
+        cylin1 = soma[parent_id]
+        cylin2 = soma[child_id]
+        cylin0 = dcp(soma[child_id])
+        cylin0['position'] = (cylin1['position'] + cylin2['position'])/2
+        cylin0['radius'] = np.max([cylin1['radius'], cylin2['radius']])
+        temp_cylinder = Cylinder([cylin0, cylin1, cylin2], 1)
+        # add points
+        p, _ = temp_cylinder.output()
+        points.append(p)
+        # new node
+        parent_id = child_id
+        if len(soma[parent_id]['children_id']) != 0:
+            for child_id in soma[parent_id]['children_id']:
+                if child_id < len(soma):
+                    self._add_points(points, soma, parent_id, child_id)
+        else:
+            # stop recursion
+            return 0
+
+    @property
+    def geometric_measures(self):
+        ms = mlab.MeshSet()
+        m = mlab.Mesh(
+            vertex_matrix = self.points.T,
+            v_normals_matrix = self.normals.T
+            )
+        ms.add_mesh(m)
+        ms.convex_hull()
+        return ms.compute_geometric_measures()
+
+    @property
+    def area(self):
+        return self._geometric_measures['surf_area']
+
+    @property
+    def volume(self):
+        return self._geometric_measures['mesh_volume']
 
 
 class Frustum(Geom):
@@ -244,7 +571,7 @@ class Frustum(Geom):
                 `on`: mask of points on the boundary;
                 `outer`: mask of outer points.
         """
-        # transform points to local local coordinate
+        # transform points to local coordinate
         points = geom.points - self._translation
         points = self._rotation.T @ points
         
@@ -337,34 +664,28 @@ class Frustum(Geom):
                 `points`: coordinates of sampled points,
                 `normals`: out-pointing normal vectors.
         """
-        # get lateral points and normals
-        if np.min([self.ra,self.rb]) < 0.3:
-            npoint_lateral = int(10 * self.density * self.lateral_area 
-                    * np.sqrt(self.h/np.min([self.ra,self.rb])))
-        else:
-            npoint_lateral = int(self.density * self.lateral_area 
-                    * np.sqrt(self.h/np.min([self.ra,self.rb])))
-        npoint_lateral = np.max([npoint_lateral, 256])
-        npoint_lateral = np.min([npoint_lateral, 10000])
-        points_lateral, theta = self._unitfrustum(npoint_lateral)        
+        # number of lateral points
+        npoint_lateral = int(self.density*20*(10 + self.h))
+        # create lateral points and normals
+        points_lateral, theta = self._localfrustum(npoint_lateral)        
         normals_lateral = self._rotate_local_normal(
             theta, self.local_lateral_normal)
         # get top sphere
         nsphere = int(self.density * self.top_area / 2)
-        nsphere = np.max([npoint_lateral, 64])
+        nsphere = np.max([nsphere, 64])
         sphere = unitsphere(2 * nsphere)
         points_top = self.rb * sphere[:, :nsphere]
         points_top[2, :] += self.h
         normals_top = sphere[:, :nsphere]
         # get bottom sphere
         nsphere = int(self.density * self.bottom_area / 2)
-        nsphere = np.max([npoint_lateral, 64])
+        nsphere = np.max([nsphere, 64])
         sphere = unitsphere(2 * nsphere)
         points_bottom = self.ra * sphere[:, nsphere:]
         normals_bottom = sphere[:, nsphere:]
         # get top junction
-        npoint_junc_top = 10 * int(self.density * 2*np.pi * self.rb)
-        npoint_junc_top = np.max([npoint_junc_top, 32])
+        npoint_junc_top = int(self.density * 30)
+        npoint_junc_top = np.max([npoint_junc_top, 30])
         normals_junc_top, theta = unitcircle(npoint_junc_top)
         points_junc_top = self.rb * normals_junc_top
         points_junc_top[2, :] += self.h
@@ -372,8 +693,8 @@ class Frustum(Geom):
         normals_junc_top += normals_junc_top2
         normals_junc_top = normals_junc_top / LA.norm(normals_junc_top, axis=0)
         # get bottom junction
-        npoint_junc_bottom = 10 * int(self.density * 2*np.pi * self.ra)
-        npoint_junc_bottom = np.max([npoint_junc_bottom, 32])
+        npoint_junc_bottom = int(self.density * 30)
+        npoint_junc_bottom = np.max([npoint_junc_bottom, 30])
         normals_junc_bottom, theta = unitcircle(npoint_junc_bottom)
         points_junc_bottom = self.ra * normals_junc_bottom
         normals_junc_bottom2 = self._rotate_local_normal(theta, self.local_lateral_normal)
@@ -412,8 +733,8 @@ class Frustum(Geom):
         R[:, 2, 2] = 1
         return np.squeeze(R @ normals).T
 
-    def _unitfrustum(self, n):
-        """Evenly distribute points on a unit frustum.
+    def _localfrustum(self, n):
+        """Evenly distribute points on a local frustum lateral surface.
 
         Args:
             n (int): number of sampled points.
@@ -428,7 +749,7 @@ class Frustum(Geom):
         points = np.zeros([3, n])
         rmin = np.min([self.ra, self.rb])
         rmax = np.max([self.ra, self.rb])
-        if (rmax - rmin) / self.slant_h > 1:
+        if (rmax - rmin) / self.slant_h > 0.1:
             r = lambda h: rmin + (rmax - rmin) * h / self.h
             slant = rmin * self.slant_h / (rmax - rmin)
             # Create points, distribute more points on the rmax side
@@ -437,7 +758,10 @@ class Frustum(Geom):
             z = self.h * (np.sqrt(y) - temp) / (1 - temp)
             points[0, :] = np.cos(theta) * r(z)
             points[1, :] = np.sin(theta) * r(z)
-            points[2, :] = z
+            if self.ra < self.rb:
+                points[2, :] = z
+            else:
+                points[2, :] = self.h - z
         else:
             # frustum is similar to a cylinder
             z = self.h * y
@@ -612,9 +936,9 @@ def ellipsoid(n, a, b, c):
 
     Args:
         n (int): number of sampled points.
-        a (float): semi-axis length.
-        b (float): semi-axis length.
-        c (float): semi-axis length.
+        a (float): semi a-axis length.
+        b (float): semi b-axis length.
+        c (float): semi c-axis length.
 
     Returns:
         tuple:
@@ -628,10 +952,10 @@ def ellipsoid(n, a, b, c):
         raise ValueError('Invalid ellipsoid axis length.')
     return points, normals
 
-def cylinder(n, r, h, only_lateral=True):
+def cylinder(n, r, h):
     """Evenly distribute points on a cylinder surface.
 
-        Cylinder lateral surfaceis defined by:
+        Cylinder lateral surface is defined by:
             x^2/r^2 + y^2/r^2 = 1,
             z in range(-h/2, h/2).
 
@@ -639,34 +963,50 @@ def cylinder(n, r, h, only_lateral=True):
         n (int): number of sampled points.
         r (float): cylinder radius.
         h (float): cylinder height.
-        only_lateral (bool): only include lateral surface.
 
     Returns:
         tuple: coordinates of sampled points and their normals.
     """
-    if not only_lateral:
-        n_disk = int(n*r/(h+r)/2)
-        n -= 2*n_disk
+    # number of points on a disk
+    n_disk = int(n*r/(h+r)/2)
     if r!=0 and h!=0:
         r, h = np.abs(r), np.abs(h)
         # Create angles
         x, y = fibonacci_lattice(n)
         theta = 2 * np.pi * x
         z = h * (y - 0.5)
-        # Create points and normals
-        normals = np.zeros([3, n])
-        normals[0, :] = np.cos(theta)
-        normals[1, :] = np.sin(theta)
-        normals[2, :] = 0
-        points = r * normals
-        points[2, :] = z
-        if not only_lateral:
-            points_bottom = unitdisk(n_disk) - np.array([[0,0,h/2]]).T
-            normals_bottom = np.zeors((3, n_disk))
-            normals_bottom[2, :] = -1
-            points_top = unitdisk(n_disk) + np.array([[0,0,h/2]]).T
-            normals_top = np.zeors((3, n_disk))
-            normals_top[2, :] = 1
+        # lateral points and normals
+        normals_lateral = np.zeros([3, n])
+        normals_lateral[0, :] = np.cos(theta)
+        normals_lateral[1, :] = np.sin(theta)
+        points_lateral = r * normals_lateral
+        points_lateral[2, :] = z
+        # bottom disk
+        points_bottom = r * unitdisk(n_disk) - np.array([[0,0,h/2]]).T
+        normals_bottom = np.zeros((3, n_disk))
+        normals_bottom[2, :] = -1
+        # top disk
+        points_top = r * unitdisk(n_disk) + np.array([[0,0,h/2]]).T
+        normals_top = np.zeros((3, n_disk))
+        normals_top[2, :] = 1
+        # bottom junction
+        npoint_junc = int(np.max([n_disk/10, 30]))
+        normals_junc_bottom, _ = unitcircle(npoint_junc)
+        points_junc_bottom = r * normals_junc_bottom
+        points_junc_bottom[2, :] -= h/2
+        normals_junc_bottom += np.array([[0,0,-1]]).T
+        normals_junc_bottom = normals_junc_bottom / LA.norm(normals_junc_bottom, axis=0)
+        # top junction
+        normals_junc_top, _ = unitcircle(npoint_junc)
+        points_junc_top = r * normals_junc_top
+        points_junc_top[2, :] += h/2
+        normals_junc_top += np.array([[0,0,1]]).T
+        normals_junc_top = normals_junc_top / LA.norm(normals_junc_top, axis=0)
+        # assemble points and normals
+        points = np.hstack((points_top, points_junc_top, points_lateral,
+            points_junc_bottom, points_bottom))
+        normals = np.hstack((normals_top, normals_junc_top, normals_lateral,
+            normals_junc_bottom, normals_bottom))
     else:
         raise ValueError('Invalid cylinder parameters.')
     return points, normals
