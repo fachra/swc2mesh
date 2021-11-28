@@ -23,7 +23,20 @@ class Geom():
             output:
                 output valid points.
     """
+    # compartment colors
+    colors = np.array([
+        [0.4, 0.2, 0.6, 0.6],   # purple, undefined
+        [0.85, 0.12, 0.09, 0.6],# red, soma
+        [0.7, 0.7, 0.7, 0.6],   # gray, axon
+        [0.09, 0.63, 0.52, 0.6],# green, basal_dendrite
+        [1.0, 0, 1.0, 0.6],     # magenta, apical_dendrite
+        [0.97, 0.58, 0.02, 0.6],# orange, custom
+        [1.0, 0.75, 0.8, 0.6],  # pink, unspecified_neurites
+        [0.17, 0.17, 2/3, 0.6]  # blue, glia_processes
+        ])
+
     def __init__(self) -> None:
+        self.c = np.array([[1], [1], [1]])
         self.points = None
         self.normals = None
         self.keep = None
@@ -68,7 +81,7 @@ class Geom():
         """
         p = self.points[:, self.keep]
         n = self.normals[:, self.keep]
-        return p, n
+        return p, n, self.c
 
     def __len__(self) -> int:
         return np.count_nonzero(self.keep)
@@ -81,7 +94,7 @@ class Geom():
             y = {'min': -np.inf, 'max': -np.inf}
             z = {'min': -np.inf, 'max': -np.inf}
         else:
-            p, _ = self.output()
+            p, _, _ = self.output()
             x = {'min': np.min(p[0,:]), 'max': np.max(p[0,:])}
             y = {'min': np.min(p[1,:]), 'max': np.max(p[1,:])}
             z = {'min': np.min(p[2,:]), 'max': np.max(p[2,:])}
@@ -110,6 +123,7 @@ class Sphere(Geom):
                 two keys: `position` and `radius`.
         """
         super().__init__()
+        self.c = self.colors[1].reshape(4, 1)
         self.r = soma['radius']
         self.center = soma['position'].reshape(3, 1)
         self.density = density
@@ -127,7 +141,8 @@ class Sphere(Geom):
             tuple: contains three masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
-                `outer`: mask of outer points.
+                `outer`: mask of outer points;
+                `out_near`: mask of outer points close to the boundary.
         """
         # compute distance
         dist = LA.norm(geom.points - self.center, axis=0)
@@ -136,7 +151,8 @@ class Sphere(Geom):
         inner = dist < -eps
         on = (-eps <= dist) & (dist <= eps)
         outer = dist > eps
-        return inner, on, outer
+        out_near = (dist > 0) & (dist < 0.01)
+        return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
         """Flip inward normal vectors.
@@ -184,6 +200,7 @@ class Sphere(Geom):
 class Ellipsoid(Geom):
     def __init__(self, soma, density) -> None:
         super().__init__()
+        self.c = self.colors[1].reshape(4, 1)
         self.center = soma[0]['position'].reshape(3, 1)
         # axes
         self.a = soma[0]['radius']
@@ -209,7 +226,8 @@ class Ellipsoid(Geom):
             tuple: contains three masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
-                `outer`: mask of outer points.
+                `outer`: mask of outer points;
+                `out_near`: mask of outer points close to the boundary.
         """
         # transform points to local coordinate
         points = self._rotation.T @ (geom.points - self._translation)
@@ -220,7 +238,8 @@ class Ellipsoid(Geom):
         inner = dist <= -eps
         on = (dist > -eps) & (dist < eps)
         outer = dist >= eps
-        return inner, on, outer
+        out_near = (dist > 0) & (dist < 0.01)
+        return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
         """Flip inward normal vectors.
@@ -295,6 +314,7 @@ class Ellipsoid(Geom):
 class Cylinder(Geom):
     def __init__(self, soma, density) -> None:
         super().__init__()
+        self.c = self.colors[1].reshape(4, 1)
         self.center = soma[0]['position'].reshape(3, 1)
         self.r = soma[0]['radius']
         self.axis = soma[1]['position'] - soma[2]['position']
@@ -318,7 +338,8 @@ class Cylinder(Geom):
             tuple: contains three masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
-                `outer`: mask of outer points.
+                `outer`: mask of outer points;
+                `out_near`: mask of outer points close to the boundary.
         """
         # transform points to local coordinate
         points = self._rotation.T @ (geom.points - self._translation)
@@ -328,7 +349,8 @@ class Cylinder(Geom):
         inner = mask_in & (dist <= -eps)
         on = mask_in & (dist > -eps) & (dist < eps)
         outer = (dist >= eps) | ~mask_in
-        return inner, on, outer
+        out_near = (dist > 0) & (dist < 0.01) & outer
+        return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
         """Flip inward normal vectors.
@@ -395,6 +417,7 @@ class Cylinder(Geom):
 class Contour(Geom):
     def __init__(self, soma, density) -> None:
         super().__init__()
+        self.c = self.colors[1].reshape(4, 1)
         self.center = soma[0]['position'].reshape(3, 1)
         self._translation = self.center
         self.density = density
@@ -413,7 +436,8 @@ class Contour(Geom):
             tuple: contains three masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
-                `outer`: mask of outer points.
+                `outer`: mask of outer points;
+                `out_near`: mask of outer points close to the boundary.
         """
         # transform points to local coordinate
         ms = mlab.MeshSet()
@@ -432,7 +456,8 @@ class Contour(Geom):
         inner = dist <= -eps
         on = (dist > -eps) & (dist < eps)
         outer = dist >= eps
-        return inner, on, outer
+        out_near = (dist > 0) & (dist < 0.01)
+        return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
         """Flip inward normal vectors.
@@ -486,7 +511,7 @@ class Contour(Geom):
         cylin0['radius'] = np.max([cylin1['radius'], cylin2['radius']])
         temp_cylinder = Cylinder([cylin0, cylin1, cylin2], 1)
         # add points
-        p, _ = temp_cylinder.output()
+        p, _, _ = temp_cylinder.output()
         points.append(p)
         # new node
         parent_id = child_id
@@ -548,6 +573,7 @@ class Frustum(Geom):
                 A dictionary with two keys: `position` and `radius`.
         """
         super().__init__()
+        self.c = self.colors[end['type']].reshape(4, 1)
         self.ra = start['radius']
         self.rb = end['radius']
         self.a = start['position'].reshape(3, 1)
@@ -569,34 +595,36 @@ class Frustum(Geom):
             tuple: contains three masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
-                `outer`: mask of outer points.
+                `outer`: mask of outer points;
+                `out_near`: mask of outer points close to the boundary.
         """
         # transform points to local coordinate
         points = geom.points - self._translation
         points = self._rotation.T @ points
-        
+
         # top
         top_mask = points[2, :] >= self.h
         dist = LA.norm(points - np.array([[0,0,self.h]]).T, axis=0)
         dist = dist - self.rb
-        top_in, top_on, top_out = \
+        top_in, top_on, top_out, top_near = \
             self._create_masks(top_mask, dist, eps)
         # bottom
         bottom_mask = points[2, :] <= 0
         dist = LA.norm(points, axis=0) - self.ra
-        bottom_in, bottom_on, bottom_out = \
+        bottom_in, bottom_on, bottom_out, bottom_near = \
             self._create_masks(bottom_mask, dist, eps)
         # lateral
         lateral_mask = (points[2, :] > 0) & (points[2, :] < self.h)
         dist = LA.norm(points[:2, :], axis=0) - self._r(points[2, :])
-        lateral_in, lateral_on, lateral_out = \
+        lateral_in, lateral_on, lateral_out, lateral_near = \
             self._create_masks(lateral_mask, dist, eps)
 
         # assemble masks
         inner = top_in | lateral_in | bottom_in
         on = top_on | lateral_on | bottom_on
         outer = top_out | lateral_out | bottom_out
-        return inner, on, outer
+        out_near = top_near | lateral_near | bottom_near
+        return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
         """Flip inward normal vectors.
@@ -665,7 +693,14 @@ class Frustum(Geom):
                 `normals`: out-pointing normal vectors.
         """
         # number of lateral points
-        npoint_lateral = int(self.density*16*(10 + 5*self.h))
+        if self.r_min < 0.1:
+            npoint_lateral = int(self.density*16*(10 + 10*self.h))
+        elif self.r_min < 0.5:
+            npoint_lateral = int(self.density*16*(10 + 5*self.h))
+        elif self.r_min < 1:
+            npoint_lateral = int(self.density*16*(10 + 2*self.h))
+        else:
+            npoint_lateral = int(self.density*16*(10 + self.h))
         npoint_lateral = np.max([npoint_lateral, 200])
         # create lateral points and normals
         points_lateral, theta = self._localfrustum(npoint_lateral)        
@@ -748,8 +783,8 @@ class Frustum(Geom):
         theta = 2 * np.pi * x
 
         points = np.zeros([3, n])
-        rmin = np.min([self.ra, self.rb])
-        rmax = np.max([self.ra, self.rb])
+        rmin = self.r_min
+        rmax = self.r_max
         if (rmax - rmin) / self.slant_h > 0.1:
             r = lambda h: rmin + (rmax - rmin) * h / self.h
             slant = rmin * self.slant_h / (rmax - rmin)
@@ -823,6 +858,14 @@ class Frustum(Geom):
         return R
 
     @property
+    def r_max(self):
+        return max(self.ra, self.rb)
+
+    @property
+    def r_min(self):
+        return min(self.ra, self.rb)
+
+    @property
     def lateral_area(self):
         return np.pi * self.slant_h * (self.ra + self.rb)
 
@@ -860,7 +903,8 @@ class Frustum(Geom):
         inner = mask & (dist < -eps)
         on = mask & (-eps <= dist) & (dist <= eps)
         outer = mask & (eps < dist)
-        return inner, on, outer
+        out_near = mask & (dist > 0) & (dist < 0.01)
+        return inner, on, outer, out_near
 
 
 def fibonacci_lattice(n):

@@ -23,40 +23,30 @@ class Swc2mesh():
         'custom',
         'unspecified_neurites',
         'glia_processes'
-    )
-    # compartment colors
-    colors = (
-        'black',  # 'undefined'
-        'red',    # 'soma'
-        'gray',   # 'axon'
-        'green',  # 'basal_dendrite'
-        'magenta',# 'apical_dendrite'
-        'yellow', # 'custom'
-        'pink',   # 'unspecified_neurites'
-        'blue'   # 'glia_processes'
-    )
+        )
     soma_types = (
         'sphere',
         'ellipsoid',
         'cylinder',
         'contour'
-    )
+        )
 
     def __init__(self,
                  file=None,
                  soma_shape='sphere',
                  to_origin=True,
-                 use_scale=False
+                 use_scale=False,
+                 depth = None
                 ) -> None:
         # TODO:
         # 1. simplification
         # 2. post-cleaning
-        # 3. adding colors
-        # 4. swc and mesh measurement
+        # 3. swc and mesh measurement
         self.file = file
         self.soma_shape = soma_shape
         self.to_origin = to_origin
         self.use_scale = use_scale
+        self.depth = depth
         self.scale = np.ones(3)
         self.meshes = dict()
         if self.file:
@@ -71,7 +61,7 @@ class Swc2mesh():
             self.file = file
         if not self.file.lower().endswith('.swc'):
             Warning(f'{self.file} may not be in the SWC format.')
-        
+        # parse SWC
         self.swc = self._parse_swc()
         self.nodes = self._create_nodes()
 
@@ -79,15 +69,18 @@ class Swc2mesh():
                  savename=None,
                  compartment='neuron',
                  density=1.0,
+                 depth = None,
                  cleaning=False,
                  simplification=True,
                 ) -> None:
         """legal compartment list = ['undefined', ..., 'glia_processes',
             'neuron', 'all', 'soma+...']"""
+        if depth is not None:
+            self.depth = depth
         if compartment == 'all':
             # create meshes for all compartments and the neuron
             for cmpt in self.types + ('neuron',):
-                self.generate(savename, cmpt, density,
+                self.generate(savename, cmpt, density, depth,
                     cleaning, simplification)
         else:
             self.density = density
@@ -165,33 +158,46 @@ class Swc2mesh():
         return cmpt_id
 
     def _build_mesh(self, geom, savename, cleaning, simplification):
-        # TODO
-        # 1. merge theoretical normals and estimated normals
         point_list, normal_list = [], []
+        quality_list, color_list = [], []
+        # the minimum radius
+        r_min = np.inf
         for igeom in geom:
-            p, n = igeom.output()
+            p, n, c = igeom.output()
             point_list.append(p)
             normal_list.append(n)
+            c = c * np.ones((4, p.shape[1]))
+            color_list.append(c)
+            # vertex quality
+            q = 0.5 * np.ones((1, p.shape[1]))
+            if isinstance(igeom, Frustum):
+                radius = igeom.r_min
+                r_min = min(radius, r_min)
+                if radius <= 10.3:
+                    q *= 2*np.exp(-np.log(2)*(radius-0.3)/10)
+            quality_list.append(q)
         points = np.concatenate(point_list, axis=1)
         normals = np.concatenate(normal_list, axis=1)
+        colors = np.concatenate(color_list, axis=1)
+        quality = np.concatenate(quality_list, axis=1)
         normals_esti = self._estimate_normals(points)
         normals_esti = self._fix_normals(points, normals_esti, geom)
-        d = {
-            'points': points,
-            'normals': normals,
-            'normals2': normals_esti
-        }
-        savemat(savename+'.mat', d)
+        # merge theoretical normals and estimated normals
+        normals = 0.7*normals + 0.3*normals_esti
+        normals = normals / np.linalg.norm(normals, axis=0)
         # build surface
         ms = mlab.MeshSet()
         m = mlab.Mesh(
                 vertex_matrix = points.T, 
-                v_normals_matrix = normals.T
+                v_normals_matrix = normals.T,
+                v_quality_array = quality.T,
+                v_color_matrix = colors.T
             )
         ms.add_mesh(m)
         print('build mesh')
         s = time.time()
-        ms.surface_reconstruction_screened_poisson(depth=15)
+        depth = self._depth(r_min)
+        ms.surface_reconstruction_screened_poisson(depth=depth)
         print(time.time() - s)
         # ms = self._post_cleaning(ms)
         # ms = self._simplification(ms)
@@ -290,10 +296,13 @@ class Swc2mesh():
     @staticmethod
     def _parent_child_intersect(geom, p, c) -> None:
         # update parent
-        [_, on, outer] = geom[c].intersect(geom[p])
-        geom[p].update(np.logical_or(on, outer))
+        [_, on, outer, out_near] = geom[c].intersect(geom[p])
+        geom[p].update(
+            np.logical_or(on, outer),
+            np.logical_or(on, out_near)
+            )
         # update child
-        [_, _, outer] = geom[p].intersect(geom[c])
+        [_, _, outer, _] = geom[p].intersect(geom[c])
         geom[c].update(outer)
 
     def _post_cleaning(self, ms):
@@ -314,6 +323,26 @@ class Swc2mesh():
             normals[:, start:end] = igeom.fix_normals(p, n)
             start = end
         return normals
+
+    def _depth(self, r_min):
+        if self.depth is None:
+            if r_min > 2:
+                depth = 10
+            elif r_min > 1:
+                depth = 12
+            elif r_min > 0.5:
+                depth = 15
+            elif r_min > 0.25:
+                depth = 18
+            elif r_min > 0.1:
+                depth = 19
+            elif r_min > 0.05:
+                depth = 20
+            else:
+                depth = 22
+        else:
+            depth = self.depth
+        return depth
 
     @staticmethod
     def _create_name(savename, compartment, i=None):
@@ -360,11 +389,17 @@ class Swc2mesh():
                         cmpt_type = 1
                         Warning('Soma absent. Convert the first point to soma.')
                     if parent_id >= id:
-                        raise ValueError("Parent id must be less than children id.")
-                    if id < 0: raise ValueError('Negative compartment ID.')
-                    if radius <= 0: raise ValueError('Negative radius.')
+                        raise ValueError(f"Node id {line[0]}: \
+                            parent id must be less than children id.")
+                    if id < 0: 
+                        raise ValueError(f'Node id {line[0]}: \
+                            negative compartment ID.')
+                    if radius <= 0:
+                        raise ValueError(f'Node id {line[0]}: \
+                            negative radius.')
                     if cmpt_type < 0 or cmpt_type > 7:
-                        raise TypeError('Undefined neuronal compartment type.')
+                        raise TypeError(f'Node id {line[0]}: \
+                            undefined neuronal compartment type.')
                     # record entry
                     entry = {
                         'id':           id,
