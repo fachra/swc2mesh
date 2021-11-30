@@ -4,7 +4,7 @@ from copy import deepcopy as dcp
 import pymeshlab as mlab
 from os.path import splitext
 from multiprocessing import Pool
-from scipy.io import savemat
+from trimesh import Trimesh
 import time
 
 
@@ -41,7 +41,6 @@ class Swc2mesh():
         # TODO:
         # 1. simplification
         # 2. post-cleaning
-        # 3. swc and mesh measurement
         self.file = file
         self.soma_shape = soma_shape
         self.to_origin = to_origin
@@ -51,7 +50,6 @@ class Swc2mesh():
         self.meshes = dict()
         if self.file:
             self.read_swc()
-        pass # get swc and mesh measurement
 
     def read_swc(self, file=None):
         # check SWC file
@@ -62,6 +60,7 @@ class Swc2mesh():
         if not self.file.lower().endswith('.swc'):
             Warning(f'{self.file} may not be in the SWC format.')
         # parse SWC
+        print(f"Read {self.file}.")
         self.swc = self._parse_swc()
         self.nodes = self._create_nodes()
 
@@ -70,8 +69,7 @@ class Swc2mesh():
                  compartment='neuron',
                  density=1.0,
                  depth = None,
-                 cleaning=False,
-                 simplification=True,
+                 simplification=False
                 ) -> None:
         """legal compartment list = ['undefined', ..., 'glia_processes',
             'neuron', 'all', 'soma+...']"""
@@ -80,10 +78,10 @@ class Swc2mesh():
         if compartment == 'all':
             # create meshes for all compartments and the neuron
             for cmpt in self.types + ('neuron',):
-                self.generate(savename, cmpt, density, depth,
-                    cleaning, simplification)
+                self.generate(savename, cmpt, density, depth, simplification)
         else:
             self.density = density
+            print(f"Construct {compartment} segments.")
             geoms = self._create_geoms_list(compartment)
             self.meshes[compartment] = []
             for ind, igeom in enumerate(geoms):
@@ -91,8 +89,9 @@ class Swc2mesh():
                     name = self._create_name(savename, compartment)
                 else:
                     name = self._create_name(savename, compartment, ind)
-                imesh = self._build_mesh(
-                    igeom, name, cleaning, simplification)
+                print(f"Generate mesh for {compartment} compartment. \
+                        [{ind+1}/{len(geoms)}]")
+                imesh = self._build_mesh(igeom, name, simplification)
                 self.meshes[compartment].append(imesh)
 
     def _create_geoms_list(self, compartment):
@@ -157,50 +156,152 @@ class Swc2mesh():
                 f'Compartment {compartment} is illegal.')
         return cmpt_id
 
-    def _build_mesh(self, geom, savename, cleaning, simplification):
+    def _build_mesh(self, geom, savename, simplification):
+        # construct point cloud
         point_list, normal_list = [], []
         quality_list, color_list = [], []
-        # the minimum radius
         r_min = np.inf
         for igeom in geom:
-            p, n, c = igeom.output()
+            p, n, c, on = igeom.output()
             point_list.append(p)
             normal_list.append(n)
-            c = c * np.ones((4, p.shape[1]))
             color_list.append(c)
-            # vertex quality
-            q = 0.5 * np.ones((1, p.shape[1]))
             if isinstance(igeom, Frustum):
-                radius = igeom.r_min
-                r_min = min(radius, r_min)
-                if radius <= 10.3:
-                    q *= 2*np.exp(-np.log(2)*(radius-0.3)/10)
-            quality_list.append(q)
+                r_min = min(r_min, igeom.r_min)
+            # q = igeom.quality()
+            # quality_list.append(q)
         points = np.concatenate(point_list, axis=1)
         normals = np.concatenate(normal_list, axis=1)
         colors = np.concatenate(color_list, axis=1)
-        quality = np.concatenate(quality_list, axis=1)
-        normals_esti = self._estimate_normals(points)
-        normals_esti = self._fix_normals(points, normals_esti, geom)
+        # quality = np.concatenate(quality_list, axis=1)
+
+        # normals_esti = self._estimate_normals(points)
+        # normals_esti = self._fix_normals(points, normals_esti, geom)
         # merge theoretical normals and estimated normals
-        normals = 0.7*normals + 0.3*normals_esti
-        normals = normals / np.linalg.norm(normals, axis=0)
+        # normals = 0*normals + 0.3*normals_esti
+        # normals = normals / np.linalg.norm(normals, axis=0)
+        # fix normals_esti based on normals
+        # cos_ang = np.einsum('ij,ij->j', normals_esti, normals)
+        # normals_esti2 = dcp(normals_esti)
+        # normals_esti2[:, cos_ang<0] *= -1
+
+        # with open("ans_analy.ply", "w") as f:
+        #     f.write("ply\n")
+        #     f.write("format ascii 1.0\n")
+        #     f.write(f"element vertex {normals.shape[1]}\n")
+        #     f.write(f"property float x\n")
+        #     f.write(f"property float y\n")
+        #     f.write(f"property float z\n")
+        #     f.write(f"property float nx\n")
+        #     f.write(f"property float ny\n")
+        #     f.write(f"property float nz\n")
+        #     f.write(f"end_header\n")
+        #     for ii in range(points.shape[1]):
+        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {normals[0, ii]} {normals[1, ii]} {normals[2, ii]}\n"
+        #         f.write(p_str)
+        # f.close()
+
+        # with open("ans_esti.ply", "w") as f:
+        #     f.write("ply\n")
+        #     f.write("format ascii 1.0\n")
+        #     f.write(f"element vertex {normals.shape[1]}\n")
+        #     f.write(f"property float x\n")
+        #     f.write(f"property float y\n")
+        #     f.write(f"property float z\n")
+        #     f.write(f"property float nx\n")
+        #     f.write(f"property float ny\n")
+        #     f.write(f"property float nz\n")
+        #     f.write(f"end_header\n")
+        #     for ii in range(points.shape[1]):
+        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {normals_esti[0, ii]} {normals_esti[1, ii]} {normals_esti[2, ii]}\n"
+        #         f.write(p_str)
+        # f.close()
+
+        # with open("ans_esti_fix.ply", "w") as f:
+        #     f.write("ply\n")
+        #     f.write("format ascii 1.0\n")
+        #     f.write(f"element vertex {normals.shape[1]}\n")
+        #     f.write(f"property float x\n")
+        #     f.write(f"property float y\n")
+        #     f.write(f"property float z\n")
+        #     f.write(f"property float nx\n")
+        #     f.write(f"property float ny\n")
+        #     f.write(f"property float nz\n")
+        #     f.write(f"end_header\n")
+        #     for ii in range(points.shape[1]):
+        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {normals_esti2[0, ii]} {normals_esti2[1, ii]} {normals_esti2[2, ii]}\n"
+        #         f.write(p_str)
+        # f.close()
+
+        # ms = mlab.MeshSet()
+        # m = mlab.Mesh(
+        #         vertex_matrix = points.T, 
+        #         v_normals_matrix = normals.T
+        #     )
+        # ms.add_mesh(m)
+        # ms.smooths_normals_on_a_point_sets(k=8)
+        # nor_smooth = ms.current_mesh().vertex_normal_matrix().T
+        # with open("ans_ana_smooth.ply", "w") as f:
+        #     f.write("ply\n")
+        #     f.write("format ascii 1.0\n")
+        #     f.write(f"element vertex {normals.shape[1]}\n")
+        #     f.write(f"property float x\n")
+        #     f.write(f"property float y\n")
+        #     f.write(f"property float z\n")
+        #     f.write(f"property float nx\n")
+        #     f.write(f"property float ny\n")
+        #     f.write(f"property float nz\n")
+        #     f.write(f"end_header\n")
+        #     for ii in range(points.shape[1]):
+        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {nor_smooth[0, ii]} {nor_smooth[1, ii]} {nor_smooth[2, ii]}\n"
+        #         f.write(p_str)
+        # f.close()
+
         # build surface
         ms = mlab.MeshSet()
         m = mlab.Mesh(
                 vertex_matrix = points.T, 
                 v_normals_matrix = normals.T,
-                v_quality_array = quality.T,
-                v_color_matrix = colors.T
+                # v_quality_array = quality.T,
+                # v_color_matrix = colors.T
             )
         ms.add_mesh(m)
-        print('build mesh')
-        s = time.time()
+        ms.remove_duplicate_vertices()
+        # ms.merge_close_vertices(threshold=mlab.Percentage(1))
+        ms.smooths_normals_on_a_point_sets(k=5)
+        ms.normalize_vertex_normals()
+        nn = ms.current_mesh().vertex_normal_matrix().T
+        pp = ms.current_mesh().vertex_matrix().T
+        with open("Anstoetz_PV-IN6_pcd.ply", "w") as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {pp.shape[1]}\n")
+            f.write(f"property float x\n")
+            f.write(f"property float y\n")
+            f.write(f"property float z\n")
+            f.write(f"property float nx\n")
+            f.write(f"property float ny\n")
+            f.write(f"property float nz\n")
+            f.write(f"end_header\n")
+            for ii in range(pp.shape[1]):
+                p_str = f"{pp[0, ii]} {pp[1, ii]} {pp[2, ii]} {nn[0, ii]} {nn[1, ii]} {nn[2, ii]}\n"
+                f.write(p_str)
+        f.close()
+
         depth = self._depth(r_min)
+        print("Building mesh ...")
+        start = time.time()
         ms.surface_reconstruction_screened_poisson(depth=depth)
-        print(time.time() - s)
-        # ms = self._post_cleaning(ms)
-        # ms = self._simplification(ms)
+        ms = remove_small_components(ms)
+        print(f"Elapsed time: {time.time() - start:.2f} s.")
+
+        if simplification:
+            print("Simplifying mesh ...")
+            start = time.time()
+            ms = simplify(ms, simplification)
+            ms = remove_small_components(ms)
+            print(f"Elapsed time: {time.time() - start:.2f} s.")
+
         if savename:
             ms.save_current_mesh(savename)
         m = ms.current_mesh()
@@ -305,14 +406,6 @@ class Swc2mesh():
         [_, _, outer, _] = geom[p].intersect(geom[c])
         geom[c].update(outer)
 
-    def _post_cleaning(self, ms):
-        # TODO
-        return ms
-
-    def _simplification(self, ms):
-        # TODO
-        return ms
-
     def _fix_normals(self, points, normals, geom):
         start = 0
         end = 0
@@ -331,15 +424,15 @@ class Swc2mesh():
             elif r_min > 1:
                 depth = 12
             elif r_min > 0.5:
-                depth = 15
+                depth = 13
             elif r_min > 0.25:
-                depth = 18
+                depth = 14
             elif r_min > 0.1:
-                depth = 19
+                depth = 16
             elif r_min > 0.05:
-                depth = 20
+                depth = 18
             else:
-                depth = 22
+                depth = 20
         else:
             depth = self.depth
         return depth
@@ -491,15 +584,12 @@ class Swc2mesh():
     @staticmethod
     def aabb(geom):
         len_geom = len(geom)
-        print('get aabb_pairs')
-        s = time.time()
         indices = [(i, j) for i in range(len_geom - 1)
                         for j in range(i+1, len_geom)]
         aabbs = [igeom.aabb for igeom in geom]
         aabb_pairs = [(aabbs[i], aabbs[j]) for i, j in indices]
         with Pool() as p:
             flags = p.map(_aabb_collision, aabb_pairs)
-        print(time.time() - s)
         collision_indices = []
         for ind, flag in enumerate(flags):
             if flag:
@@ -518,8 +608,73 @@ def _aabb_collision(aabb_pair):
         # collision detected
         return True
 
+def _fix_mesh(ms):
+    pass
+
+def simplify(mesh, sim):
+    if isinstance(mesh, mlab.Mesh):
+        ms = mlab.MeshSet()
+        ms.add_mesh(mesh)
+    elif isinstance(mesh, mlab.MeshSet):
+        ms = dcp(mesh)
+    else:
+        raise TypeError("Unsupported mesh type.")
+
+    if isinstance(sim, float) and sim < 1:
+        # sim is the reduction percentage
+        ms.simplification_quadric_edge_collapse_decimation(
+            targetperc = sim,
+            qualityweight = True
+        )
+        flag = _fix_mesh(ms)
+    elif isinstance(sim, int):
+        # sim is the target number of faces
+        ms.simplification_quadric_edge_collapse_decimation(
+            targetfacenum = sim,
+            qualityweight = True
+        )
+        flag = _fix_mesh(ms)
+    else:
+        # sim is not False or None
+        geo_measure = ms.compute_geometric_measures()
+        area = geo_measure['surface_area']
+        nface = int(50 * area)
+        nvertex = ms.current_mesh().vertex_number()
+        nface = min(nface, int(nvertex*0.8))
+        ms.simplification_quadric_edge_collapse_decimation(
+            targetfacenum = nface,
+            qualityweight = True
+        )
+        flag = _fix_mesh(ms)
+
+        while flag or ms.current_mesh().vertex_number() > 2*area:
+            ms_temp = dcp(ms)
+            ms_temp.simplification_quadric_edge_collapse_decimation(
+                targetperc = 0.5,
+                qualityweight = True
+            )
+            flag = _fix_mesh(ms_temp)
+            if flag: ms = ms_temp
+    return ms, flag
+
+def remove_small_components(mesh):
+    if isinstance(mesh, mlab.MeshSet):
+        ms = mesh
+    else:
+        raise TypeError("Unsupported mesh type.")
+    # only keep the largest component
+    ms.select_small_disconnected_component(nbfaceratio=0.99)
+    ms.delete_selected_faces_and_vertices()
+    return ms
+
+def post_cleaning(ms):
+    ms.remove_duplicate_vertices()
+    ms.remove_duplicate_faces()
+    ms.remove_zero_area_faces()
+    ms.remove_t_vertices()
+    ms.remove_unreferenced_vertices()
+
 def show(m) -> None:
-    from trimesh import Trimesh
     tmesh = Trimesh(
                 process = False,
                 use_embree = False,

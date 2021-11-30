@@ -26,10 +26,10 @@ class Geom():
     # compartment colors
     colors = np.array([
         [0.4, 0.2, 0.6, 0.6],   # purple, undefined
-        [0.85, 0.12, 0.09, 0.6],# red, soma
+        [0.77, 0.3, 0.34, 0.6], # red, soma
         [0.7, 0.7, 0.7, 0.6],   # gray, axon
         [0.09, 0.63, 0.52, 0.6],# green, basal_dendrite
-        [1.0, 0, 1.0, 0.6],     # magenta, apical_dendrite
+        [0.73, 0.33, 0.83, 0.6],# magenta, apical_dendrite
         [0.97, 0.58, 0.02, 0.6],# orange, custom
         [1.0, 0.75, 0.8, 0.6],  # pink, unspecified_neurites
         [0.17, 0.17, 2/3, 0.6]  # blue, glia_processes
@@ -40,6 +40,7 @@ class Geom():
         self.points = None
         self.normals = None
         self.keep = None
+        self.on = None
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry."""
@@ -70,7 +71,7 @@ class Geom():
         """
         self.keep = np.logical_and(self.keep, mask.reshape(-1))
         if on is not None:
-            self.normals[:, on] = 0
+            self.on = np.logical_or(self.on, on.reshape(-1))
 
     def output(self):
         """Output all valid points.
@@ -81,7 +82,8 @@ class Geom():
         """
         p = self.points[:, self.keep]
         n = self.normals[:, self.keep]
-        return p, n, self.c
+        c = np.repeat(self.c, p.shape[1], axis=1)
+        return p, n, c, self.on
 
     def __len__(self) -> int:
         return np.count_nonzero(self.keep)
@@ -94,7 +96,7 @@ class Geom():
             y = {'min': -np.inf, 'max': -np.inf}
             z = {'min': -np.inf, 'max': -np.inf}
         else:
-            p, _, _ = self.output()
+            p, _, _, _ = self.output()
             x = {'min': np.min(p[0,:]), 'max': np.max(p[0,:])}
             y = {'min': np.min(p[1,:]), 'max': np.max(p[1,:])}
             z = {'min': np.min(p[2,:]), 'max': np.max(p[2,:])}
@@ -129,6 +131,7 @@ class Sphere(Geom):
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
+        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -214,6 +217,7 @@ class Ellipsoid(Geom):
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
+        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -326,6 +330,7 @@ class Cylinder(Geom):
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
+        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -424,6 +429,7 @@ class Contour(Geom):
         self.points, self.normals = self._create_points(soma)
         self._geometric_measures = self.geometric_measures
         self.keep = np.full(self.points.shape[1], True)
+        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -451,6 +457,7 @@ class Contour(Geom):
         ms.add_mesh(mref)
         ms.add_mesh(m)
         ms.distance_from_reference_mesh(measuremesh=1, refmesh=0)
+        # distance is saved in the quality array
         dist = ms.mesh(1).vertex_quality_array()
         # masks
         inner = dist <= -eps
@@ -493,7 +500,7 @@ class Contour(Geom):
         out_dict = ms.compute_geometric_measures()
         ms.poisson_disk_sampling(
             samplenum = int(10*self.density*out_dict['surface_area'])
-        )
+            )
         points = ms.current_mesh().vertex_matrix().T
         normals = ms.current_mesh().vertex_normal_matrix().T
         # move points to center
@@ -511,7 +518,7 @@ class Contour(Geom):
         cylin0['radius'] = np.max([cylin1['radius'], cylin2['radius']])
         temp_cylinder = Cylinder([cylin0, cylin1, cylin2], 1)
         # add points
-        p, _, _ = temp_cylinder.output()
+        p, _, _, _ = temp_cylinder.output()
         points.append(p)
         # new node
         parent_id = child_id
@@ -536,7 +543,7 @@ class Contour(Geom):
 
     @property
     def area(self):
-        return self._geometric_measures['surf_area']
+        return self._geometric_measures['surface_area']
 
     @property
     def volume(self):
@@ -583,6 +590,7 @@ class Frustum(Geom):
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
+        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -707,21 +715,21 @@ class Frustum(Geom):
         normals_lateral = self._rotate_local_normal(
             theta, self.local_lateral_normal)
         # get top sphere
-        nsphere = int(self.density * self.top_area / 2)
+        nsphere = int(self.density * self.top_area)
         nsphere = np.max([nsphere, 64])
         sphere = unitsphere(2 * nsphere)
         points_top = self.rb * sphere[:, :nsphere]
         points_top[2, :] += self.h
         normals_top = sphere[:, :nsphere]
         # get bottom sphere
-        nsphere = int(self.density * self.bottom_area / 2)
+        nsphere = int(self.density * self.bottom_area)
         nsphere = np.max([nsphere, 64])
         sphere = unitsphere(2 * nsphere)
         points_bottom = self.ra * sphere[:, nsphere:]
         normals_bottom = sphere[:, nsphere:]
         # get top junction
-        npoint_junc_top = int(self.density * 30)
-        npoint_junc_top = np.max([npoint_junc_top, 30])
+        npoint_junc_top = int(self.density * 16)
+        npoint_junc_top = np.max([npoint_junc_top, 16])
         normals_junc_top, theta = unitcircle(npoint_junc_top)
         points_junc_top = self.rb * normals_junc_top
         points_junc_top[2, :] += self.h
@@ -729,8 +737,8 @@ class Frustum(Geom):
         normals_junc_top += normals_junc_top2
         normals_junc_top = normals_junc_top / LA.norm(normals_junc_top, axis=0)
         # get bottom junction
-        npoint_junc_bottom = int(self.density * 30)
-        npoint_junc_bottom = np.max([npoint_junc_bottom, 30])
+        npoint_junc_bottom = int(self.density * 16)
+        npoint_junc_bottom = np.max([npoint_junc_bottom, 16])
         normals_junc_bottom, theta = unitcircle(npoint_junc_bottom)
         points_junc_bottom = self.ra * normals_junc_bottom
         normals_junc_bottom2 = self._rotate_local_normal(theta, self.local_lateral_normal)
@@ -783,27 +791,32 @@ class Frustum(Geom):
         theta = 2 * np.pi * x
 
         points = np.zeros([3, n])
-        rmin = self.r_min
-        rmax = self.r_max
-        if (rmax - rmin) / self.slant_h > 0.1:
-            r = lambda h: rmin + (rmax - rmin) * h / self.h
-            slant = rmin * self.slant_h / (rmax - rmin)
-            # Create points, distribute more points on the rmax side
-            temp = np.sqrt(slant / (self.slant_h + slant))
-            y = (self.slant_h * y + slant) / (self.slant_h + slant)
-            z = self.h * (np.sqrt(y) - temp) / (1 - temp)
-            points[0, :] = np.cos(theta) * r(z)
-            points[1, :] = np.sin(theta) * r(z)
-            if self.ra < self.rb:
-                points[2, :] = z
-            else:
-                points[2, :] = self.h - z
-        else:
-            # frustum is similar to a cylinder
-            z = self.h * y
-            points[0, :] = np.cos(theta) * self._r(z)
-            points[1, :] = np.sin(theta) * self._r(z)
-            points[2, :] = z
+        z = self.h * y
+        points[0, :] = np.cos(theta) * self._r(z)
+        points[1, :] = np.sin(theta) * self._r(z)
+        points[2, :] = z
+        # rmin = self.r_min
+        # rmax = self.r_max
+        # if (rmax - rmin) / self.slant_h > 0.1:
+        #     r = lambda h: rmin + (rmax - rmin) * h / self.h
+        #     slant = rmin * self.slant_h / (rmax - rmin)
+        #     # Create points, distribute more points on the rmax side
+        #     temp = np.sqrt(slant / (self.slant_h + slant))
+        #     y = (self.slant_h * y + slant) / (self.slant_h + slant)
+        #     z = self.h * (np.sqrt(y) - temp) / (1 - temp)
+        #     points[0, :] = np.cos(theta) * r(z)
+        #     points[1, :] = np.sin(theta) * r(z)
+        #     if self.ra < self.rb:
+        #         points[2, :] = z
+        #     else:
+        #         points[0:2, :] = points[0:2, ::-1]
+        #         points[2, :] = z
+        # else:
+        #     # frustum is similar to a cylinder
+        #     z = self.h * y
+        #     points[0, :] = np.cos(theta) * self._r(z)
+        #     points[1, :] = np.sin(theta) * self._r(z)
+        #     points[2, :] = z
         return points, theta
 
     @property
@@ -871,11 +884,11 @@ class Frustum(Geom):
 
     @property
     def top_area(self):
-        return np.pi * self.rb**2
+        return 2 * np.pi * self.rb**2
 
     @property
     def bottom_area(self):
-        return np.pi * self.ra**2
+        return 2 * np.pi * self.ra**2
 
     @property
     def area(self):
