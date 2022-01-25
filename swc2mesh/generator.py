@@ -9,9 +9,9 @@ import time
 
 
 class Swc2mesh():
-    """Convert neuronal SWC files to watertight surface meshs.
+    """Convert neuronal SWC files to watertight surface meshes.
 
-    Details about SWC format can be found [here](http://neuromorpho.org/myfaq.jsp#QS3).
+    More details can be found [here](http://neuromorpho.org/myfaq.jsp#QS3).
     """
     # compartment types
     types = (
@@ -32,10 +32,10 @@ class Swc2mesh():
         )
 
     def __init__(self,
-                 file=None,
-                 soma_shape='sphere',
-                 to_origin=True,
-                 use_scale=False,
+                 file = None,
+                 soma_shape = 'sphere',
+                 to_origin = True,
+                 use_scale = False,
                  depth = None
                 ) -> None:
         # TODO:
@@ -52,78 +52,109 @@ class Swc2mesh():
             self.read_swc()
 
     def read_swc(self, file=None):
-        # check SWC file
+        """Read the given SWC file 
+            and save the node info in the list `nodes`.
+
+        Args:
+            file (string, optional): path to the SWC file. Defaults to None.
+
+        Raises:
+            RuntimeError: the SWC file is not provided.
+        """
+        # check the SWC file
         if (file is None) and (self.file is None):
             raise RuntimeError('Please provide SWC file.')
+
+        # start reading the file
         if file:
             self.file = file
         if not self.file.lower().endswith('.swc'):
             Warning(f'{self.file} may not be in the SWC format.')
-        # parse SWC
+
+        # parse the file
         print(f"Read {self.file}.")
         self.swc = self._parse_swc()
         self.nodes = self._create_nodes()
 
     def generate(self,
-                 savename=None,
-                 compartment='neuron',
-                 density=1.0,
+                 savename = None,
+                 compartment = 'neuron',
+                 density = 1.0,
                  depth = None,
-                 simplification=False
+                 simplification = False
                 ) -> None:
         """legal compartment list = ['undefined', ..., 'glia_processes',
             'neuron', 'all', 'soma+...']"""
+        # the depth of the screened poisson surface reconstruction method
         if depth is not None:
             self.depth = depth
+
+        # generate meshes according to the parameter compartment
         if compartment == 'all':
             # create meshes for all compartments and the neuron
             for cmpt in self.types + ('neuron',):
                 self.generate(savename, cmpt, density, depth, simplification)
         else:
+            # set the point cloud density
             self.density = density
+
             print(f"Construct {compartment} segments.")
+            # create the list containing the building units
             geoms = self._create_geoms_list(compartment)
+            # build mesh for a certain compartment
             self.meshes[compartment] = []
             for ind, igeom in enumerate(geoms):
+                # create name if savename is not None
                 if len(geoms) == 1:
                     name = self._create_name(savename, compartment)
                 else:
                     name = self._create_name(savename, compartment, ind)
+                # mesh generation
                 print(f"Generate mesh for {compartment} compartment. \
                         [{ind+1}/{len(geoms)}]")
                 imesh = self._build_mesh(igeom, name, simplification)
                 self.meshes[compartment].append(imesh)
 
     def _create_geoms_list(self, compartment):
+        """Create the list `geoms` containing the building units
+            for the compartment.
+        """
+        # get the compartment number
         cmpt_type = self._cmpt_number(compartment)
+        # save building units in geoms
         geoms = []
         if isinstance(cmpt_type, list):
-            # soma+neurites
+            # case: soma+neurites or neuron-neurites
             geoms.append(self._create_soma())
             self._add_neurites(geoms, cmpt_type=cmpt_type)
         elif cmpt_type == 1:
-            # only soma
+            # case: soma
             geoms.append(self._create_soma())
         elif cmpt_type == 8:
-            # neuron
+            # case: neuron
             geoms.append(self._create_soma())
             self._add_neurites(geoms)
-        elif cmpt_type in list(range(8)).remove(1):
-            # only neurites
+        elif cmpt_type in [0, 2, 3, 4, 5, 6, 7]:
+            # case: only a neurite
             self._add_neurites(geoms, cmpt_type=[cmpt_type])
-        elif cmpt_type >= 10: 
-            # soma+neurite
-            geoms.append(self._create_soma())
-            self._add_neurites(geoms, cmpt_type=[cmpt_type%10])
         return geoms
 
     def _cmpt_number(self, compartment):
+        """Get the compartment number or a list of compartment numbers."""
+        # create a deep copy of the compartment types
         type_list = dcp(self.types)
+
+        # get the compartment number or the number list
         if compartment in type_list:
             cmpt_id = type_list.index(compartment)
+
         elif compartment == 'neuron':
             cmpt_id = 8
+
         elif '+' in compartment:
+            # mesh consists of soma and some neurites
+            # e.g., 'soma+axon+basal_dendrite'
+            # cmpt_id only contains the number of neurites
             cmpts = compartment.split('+')
             cmpt_id = []
             if cmpts[0] == 'soma':
@@ -133,11 +164,15 @@ class Swc2mesh():
                         cmpt_id.append(self.types.index(icmpt))
                     else:
                         raise ValueError(
-                            f'Compartment {icmpt} is illegal.')
+                            f'Compartment "{compartment}" is illegal.')
             else:
                 raise ValueError(
-                    f'Compartment {compartment} is illegal.')
+                    f'Compartment "{compartment}" is illegal.')
+
         elif '-' in compartment:
+            # mesh consists of the neuron except some neurites
+            # e.g., 'neuron-basal_dendrite-undefined'
+            # cmpt_id only contains the number of neurites
             cmpts = compartment.split('-')
             if cmpts[0] == 'neuron':
                 type_list.remove('soma')
@@ -146,14 +181,15 @@ class Swc2mesh():
                         type_list.remove(icmpt)
                     else:
                         raise ValueError(
-                            f'Compartment {compartment} is illegal.')
+                            f'Compartment "{compartment}" is illegal.')
             else:
                 raise ValueError(
-                    f'Compartment {compartment} is illegal.')
+                    f'Compartment "{compartment}" is illegal.')
             cmpt_id = [self.types.index(t) for t in type_list]
+
         else:
             raise ValueError(
-                f'Compartment {compartment} is illegal.')
+                f'Compartment "{compartment}" is illegal.')
         return cmpt_id
 
     def _build_mesh(self, geom, savename, simplification):
@@ -165,14 +201,14 @@ class Swc2mesh():
             p, n, c, on = igeom.output()
             point_list.append(p)
             normal_list.append(n)
-            color_list.append(c)
+            # color_list.append(c)
             if isinstance(igeom, Frustum):
                 r_min = min(r_min, igeom.r_min)
             # q = igeom.quality()
             # quality_list.append(q)
         points = np.concatenate(point_list, axis=1)
         normals = np.concatenate(normal_list, axis=1)
-        colors = np.concatenate(color_list, axis=1)
+        # colors = np.concatenate(color_list, axis=1)
         # quality = np.concatenate(quality_list, axis=1)
 
         # normals_esti = self._estimate_normals(points)
@@ -184,38 +220,6 @@ class Swc2mesh():
         # cos_ang = np.einsum('ij,ij->j', normals_esti, normals)
         # normals_esti2 = dcp(normals_esti)
         # normals_esti2[:, cos_ang<0] *= -1
-
-        # with open("ans_analy.ply", "w") as f:
-        #     f.write("ply\n")
-        #     f.write("format ascii 1.0\n")
-        #     f.write(f"element vertex {normals.shape[1]}\n")
-        #     f.write(f"property float x\n")
-        #     f.write(f"property float y\n")
-        #     f.write(f"property float z\n")
-        #     f.write(f"property float nx\n")
-        #     f.write(f"property float ny\n")
-        #     f.write(f"property float nz\n")
-        #     f.write(f"end_header\n")
-        #     for ii in range(points.shape[1]):
-        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {normals[0, ii]} {normals[1, ii]} {normals[2, ii]}\n"
-        #         f.write(p_str)
-        # f.close()
-
-        # with open("ans_esti.ply", "w") as f:
-        #     f.write("ply\n")
-        #     f.write("format ascii 1.0\n")
-        #     f.write(f"element vertex {normals.shape[1]}\n")
-        #     f.write(f"property float x\n")
-        #     f.write(f"property float y\n")
-        #     f.write(f"property float z\n")
-        #     f.write(f"property float nx\n")
-        #     f.write(f"property float ny\n")
-        #     f.write(f"property float nz\n")
-        #     f.write(f"end_header\n")
-        #     for ii in range(points.shape[1]):
-        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {normals_esti[0, ii]} {normals_esti[1, ii]} {normals_esti[2, ii]}\n"
-        #         f.write(p_str)
-        # f.close()
 
         # with open("ans_esti_fix.ply", "w") as f:
         #     f.write("ply\n")
@@ -308,6 +312,7 @@ class Swc2mesh():
         return m
 
     def _create_soma(self):
+        """Create the building unit for soma."""
         if self.soma_shape == 'sphere':
             soma = Sphere(self.nodes[0], self.density)
         elif self.soma_shape == 'ellipsoid':
@@ -320,48 +325,64 @@ class Swc2mesh():
         return [soma]
 
     def _add_neurites(self, geoms, cmpt_type=None) -> None:
+        """Add the neurite building units to geoms.
+
+        Args:
+            geoms (list): 2D list containing the building units.
+            cmpt_type (list, optional): list of needed compartment numbers. Defaults to None.
+        """
         nodes = self.nodes
         d = self.density
         if geoms:
-            # soma is in geoms
+            # soma is in geoms, add neurites to geom
             geom = geoms[0]
             parent_id = 0
             parent_geom_index = 0
             for child_id in nodes[parent_id]['children_id']:
-                if nodes[child_id]['type'] == 1:
-                    # child node is soma
-                    continue
-                if cmpt_type and nodes[child_id]['type'] not in cmpt_type:
-                    continue
-                start = dcp(nodes[parent_id])
-                start['radius'] = nodes[child_id]['radius']
-                end = nodes[child_id]
-                # add new geom
-                child_geom_index = len(geom)
-                geom.append(Frustum(start, end, d))
-                self._parent_child_intersect(geom, parent_geom_index, child_geom_index)
-                # create subsequent frustums of child_id (deep-first)
-                self._add_frustums(geom, child_id, child_geom_index, cmpt_type)
+                if (not cmpt_type or nodes[child_id]['type'] in cmpt_type) \
+                    and (nodes[child_id]['type'] != 1):
+                    # child is neurite and is needed
+                    # prepare start and end position
+                    start = dcp(nodes[parent_id])
+                    start['radius'] = nodes[child_id]['radius']
+                    end = nodes[child_id]
+                    # add new geom
+                    child_geom_index = len(geom)
+                    geom.append(Frustum(start, end, d))
+                    self._parent_child_intersect(geom, parent_geom_index, child_geom_index)
+                    # create subsequent frustums of child_id (deep-first)
+                    self._add_frustums(geom, child_id, child_geom_index, cmpt_type)
+            
+            # check intersection between all building units
             self._check_all_intersect(geom)
+
         else:
-            # soma is not in geoms, add all neurites
+            # geoms is empty, only add neurites to geoms
             soma_id = 0
             for child_id in nodes[soma_id]['children_id']:
-                if cmpt_type and nodes[child_id]['type'] not in cmpt_type:
-                    continue
-                igeom = []
-                # create the first neurite segement that is outside soma
-                start = dcp(nodes[soma_id])
-                start['radius'] = nodes[child_id]['radius']
-                end = nodes[child_id]
-                child_geom_index = len(igeom)
-                igeom.append(Frustum(start, end, d))
-                # create subsequent frustums of child_id (deep-first)
-                self._add_frustums(igeom, child_id, child_geom_index, cmpt_type)
-                self._check_all_intersect(igeom)
-                geoms.append(igeom)
+                if (not cmpt_type or nodes[child_id]['type'] in cmpt_type) \
+                    and (nodes[child_id]['type'] != 1):
+                    # child is neurite and is needed
+                    igeom = []
+                    # create the first neurite segement starting at the soma center
+                    start = dcp(nodes[soma_id])
+                    start['radius'] = nodes[child_id]['radius']
+                    end = nodes[child_id]
+                    igeom.append(Frustum(start, end, d))
+                    # create subsequent frustums of child_id (deep-first)
+                    self._add_frustums(igeom, child_id, 0, cmpt_type)
+                    self._check_all_intersect(igeom)
+                    geoms.append(igeom)
 
     def _add_frustums(self, geom, parent_id, parent_geom_index, cmpt_type=None):
+        """Add neurite building units (frustums) to `geom`.
+
+        Args:
+            geom (list): list of building units.
+            parent_id (int): parent node id in the list `nodes`.
+            parent_geom_index (int): parent node index in the list `geom`.
+            cmpt_type (list, optional): list of needed compartment numbers. Defaults to None.
+        """
         d = self.density
         nodes = self.nodes
         while len(nodes[parent_id]['children_id']) == 1:
@@ -373,29 +394,33 @@ class Swc2mesh():
             # create next frustums
             parent_id = child_id
             parent_geom_index = child_geom_index
+
         if len(nodes[parent_id]['children_id']) > 1:
             # with bifurcation, add segements recursively (deep-first)
             for child_id in nodes[parent_id]['children_id']:
-                if cmpt_type and nodes[child_id]['type'] not in cmpt_type:
-                    continue
-                child_geom_index = len(geom)
-                geom.append(Frustum(nodes[parent_id], nodes[child_id], d))
-                self._parent_child_intersect(geom, parent_geom_index, child_geom_index)
-                # create next frustums
-                self._add_frustums(geom, child_id, child_geom_index, cmpt_type)
+                if (not cmpt_type or nodes[child_id]['type'] in cmpt_type) \
+                    and (nodes[child_id]['type'] != 1):
+                    child_geom_index = len(geom)
+                    geom.append(Frustum(nodes[parent_id], nodes[child_id], d))
+                    self._parent_child_intersect(geom, parent_geom_index, child_geom_index)
+                    # add subsequent frustums
+                    self._add_frustums(geom, child_id, child_geom_index, cmpt_type)
+
         elif len(nodes[parent_id]['children_id']) == 0:
             # no children, stop adding frustums
             return 0
     
     def _check_all_intersect(self, geom):
-        indices = self.aabb(geom)
-        for i, j in indices:
+        """Remove inner points."""
+        collision_index_pairs = self.aabb(geom)
+        for i, j in collision_index_pairs:
             if len(geom[i]) != 0 and len(geom[j]) != 0:
                 self._parent_child_intersect(geom, i, j)
         return geom
 
     @staticmethod
     def _parent_child_intersect(geom, p, c) -> None:
+        # TODO: 去除两点特别近，法向成钝角
         # update parent
         [_, on, outer, out_near] = geom[c].intersect(geom[p])
         geom[p].update(
@@ -451,35 +476,45 @@ class Swc2mesh():
         return name
 
     def _parse_swc(self):
+        """Read the SWC file and save the nodes in the dict `swc`."""
+        # initialization
         swc = {
             'soma': [],
             'neurites': []
         }
         # read swc file
-        first_node = True
         with open(self.file, 'r') as f:
+            first_node = True
             for iline in f:
                 line = iline.strip().lower().split()
+
+                # read the scale array
                 if self.use_scale and 'scale' in line:
                     if line[0] == '#':
                         self.scale = np.array(line[2:5], dtype=float)
                     else:
                         self.scale = np.array(line[1:4], dtype=float)
+                
+                # read the SWC nodes
                 if len(line) == 7 and line[0].isnumeric():
-                    # check the parent compartment of the first point
+                    # check the parent compartment of the first node
                     if first_node and int(line[6]) != -1:
                         raise ValueError(
                             'Parent of the first node must be -1.')
                     else:
                         first_node = False
-                    # get entry
-                    id, cmpt_type = int(line[0])-1, int(line[1])
+
+                    # extract entries
+                    id = int(line[0]) - 1
+                    node_type = int(line[1])
                     position = self.scale * np.array(line[2:5], dtype=float)
-                    radius, parent_id = float(line[5]), int(line[6])-1
-                    # check entry
+                    radius = float(line[5])
+                    parent_id = int(line[6]) - 1
+
+                    # check entries
                     if parent_id < 0: parent_id = -1
-                    if parent_id == -1 and cmpt_type != 1:
-                        cmpt_type = 1
+                    if parent_id == -1 and node_type != 1:
+                        node_type = 1
                         Warning('Soma absent. Convert the first point to soma.')
                     if parent_id >= id:
                         raise ValueError(f"Node id {line[0]}: \
@@ -490,30 +525,37 @@ class Swc2mesh():
                     if radius <= 0:
                         raise ValueError(f'Node id {line[0]}: \
                             negative radius.')
-                    if cmpt_type < 0 or cmpt_type > 7:
+                    if node_type < 0 or node_type > 7:
                         raise TypeError(f'Node id {line[0]}: \
                             undefined neuronal compartment type.')
-                    # record entry
+
+                    # record entries
                     entry = {
                         'id':           id,
-                        'type':         cmpt_type,
+                        'type':         node_type,
                         'position':     position,
                         'radius':       radius,
                         'parent_id':    parent_id,
                         'children_id':  []
                     }
-                    if cmpt_type == 1:
+                    if node_type == 1:
                         swc['soma'].append(entry)
                     else:
                         swc['neurites'].append(entry)
+        # process soma according to the required soma shape
         self._process_soma(swc['soma'])
         return swc
 
     def _process_soma(self, soma_swc) -> None:
+        """Process the list `soma_swc` 
+            according to the required soma shape.
+        """
         # check soma shape
         if self.soma_shape not in self.soma_types:
             raise NotImplementedError(
                 f'{self.soma_shape} soma is not implemented.')
+
+        # if soma_shape is cylinder, ellipsoid or contour
         if self.soma_shape in self.soma_types[1:]:
             if len(soma_swc) <= 2:
                 Warning(
@@ -528,6 +570,7 @@ class Swc2mesh():
                     Change "soma_shape" from {self.soma_shape} to contour.'
                 )
                 self.soma_shape = 'contour'
+
         # spherical soma
         if self.soma_shape == 'sphere':
             radius = 0
@@ -544,21 +587,25 @@ class Swc2mesh():
                 isoma['parent_id'] = -1
 
     def _create_nodes(self):
+        """Convert the dict `swc` to a node list `nodes`."""
+        # initialization
         swc = self.swc
-        n_compartment = len(swc['soma']) + len(swc['neurites'])
-        nodes = [0] * n_compartment
+        len_swc = len(swc['soma']) + len(swc['neurites'])
+        nodes = [0] * len_swc
+        
         # create node list
-        for icmpt in swc['soma'] + swc['neurites']:
-            if nodes[icmpt['id']] == 0:
-                nodes[icmpt['id']] = dcp(icmpt)
+        for iswc in swc['soma'] + swc['neurites']:
+            if nodes[iswc['id']] == 0:
+                nodes[iswc['id']] = dcp(iswc)
                 if self.to_origin:
                     # move soma center to origin
-                    nodes[icmpt['id']]['position'] -= swc['soma'][0]['position']
+                    nodes[iswc['id']]['position'] -= swc['soma'][0]['position']
             else:
                 raise ValueError('Invalid swc file. \
                     Every node can only be defined once.')
-        # add children
-        for ind in range(n_compartment):
+        
+        # add children_id
+        for ind in range(len_swc):
             parent_id = nodes[ind]['parent_id']
             if parent_id != -1:
                 # current node is not the first node
@@ -575,6 +622,7 @@ class Swc2mesh():
 
     @staticmethod
     def _estimate_normals(points):
+        """Estimate normal vectors of the point cloud `points`."""
         m = mlab.Mesh(vertex_matrix = points.T)
         ms = mlab.MeshSet()
         ms.add_mesh(m)
@@ -583,6 +631,7 @@ class Swc2mesh():
     
     @staticmethod
     def aabb(geom):
+        """Get aabb collision index pairs."""
         len_geom = len(geom)
         indices = [(i, j) for i in range(len_geom - 1)
                         for j in range(i+1, len_geom)]
@@ -590,13 +639,14 @@ class Swc2mesh():
         aabb_pairs = [(aabbs[i], aabbs[j]) for i, j in indices]
         with Pool() as p:
             flags = p.map(_aabb_collision, aabb_pairs)
-        collision_indices = []
+        collision_index_pairs = []
         for ind, flag in enumerate(flags):
             if flag:
-                collision_indices.append(indices[ind])
-        return collision_indices
+                collision_index_pairs.append(indices[ind])
+        return collision_index_pairs
 
 def _aabb_collision(aabb_pair):
+    """Detect "Axis-Aligned Bounding Box" collision."""
     xa, ya, za = aabb_pair[0]
     xb, yb, zb = aabb_pair[1]
     if xa['max'] <= xb['min'] or xa['min'] >= xb['max'] \

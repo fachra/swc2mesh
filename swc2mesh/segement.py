@@ -349,7 +349,7 @@ class Cylinder(Geom):
         # transform points to local coordinate
         points = self._rotation.T @ (geom.points - self._translation)
         dist = LA.norm(points[:2, :], axis=0) - self.r
-        mask_in = (points[3, :] <= self.h/2) & (points[3, :] >= -self.h/2)
+        mask_in = (points[2, :] <= self.h/2) & (points[2, :] >= -self.h/2)
         # masks
         inner = mask_in & (dist <= -eps)
         on = mask_in & (dist > -eps) & (dist < eps)
