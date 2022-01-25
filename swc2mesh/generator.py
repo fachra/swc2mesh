@@ -1,3 +1,4 @@
+import warnings
 from .segement import Sphere, Frustum, Ellipsoid, Cylinder, Contour
 import numpy as np
 from copy import deepcopy as dcp
@@ -69,7 +70,7 @@ class Swc2mesh():
         if file:
             self.file = file
         if not self.file.lower().endswith('.swc'):
-            Warning(f'{self.file} may not be in the SWC format.')
+            warnings.warn(f'{self.file} may not be in the SWC format.')
 
         # parse the file
         print(f"Read {self.file}.")
@@ -206,6 +207,11 @@ class Swc2mesh():
                 r_min = min(r_min, igeom.r_min)
             # q = igeom.quality()
             # quality_list.append(q)
+
+        if r_min <= 0.1:
+            warnings.warn(f"Neuron has some extremely fine neurites (< {r_min}um). "\
+                + "Manual post-clearning could be needed.")
+        
         points = np.concatenate(point_list, axis=1)
         normals = np.concatenate(normal_list, axis=1)
         # colors = np.concatenate(color_list, axis=1)
@@ -515,7 +521,7 @@ class Swc2mesh():
                     if parent_id < 0: parent_id = -1
                     if parent_id == -1 and node_type != 1:
                         node_type = 1
-                        Warning('Soma absent. Convert the first point to soma.')
+                        warnings.warn('Soma absent. Convert the first point to soma.')
                     if parent_id >= id:
                         raise ValueError(f"Node id {line[0]}: \
                             parent id must be less than children id.")
@@ -558,14 +564,14 @@ class Swc2mesh():
         # if soma_shape is cylinder, ellipsoid or contour
         if self.soma_shape in self.soma_types[1:]:
             if len(soma_swc) <= 2:
-                Warning(
+                warnings.warn(
                     f'Have {len(soma_swc)} soma nodes (< 3). \
                     Change "soma_shape" from {self.soma_shape} to sphere.'
                 )
                 self.soma_shape = 'sphere'
             elif len(soma_swc) > 3 \
                  and self.soma_shape in self.soma_types[1:3]:
-                Warning(
+                warnings.warn(
                     f'Have {len(soma_swc)} soma nodes (> 3). \
                     Change "soma_shape" from {self.soma_shape} to contour.'
                 )
@@ -674,14 +680,16 @@ def simplify(mesh, sim):
         # sim is the reduction percentage
         ms.simplification_quadric_edge_collapse_decimation(
             targetperc = sim,
-            qualityweight = True
+            qualityweight = True,
+            preservenormal = True
         )
         flag = _fix_mesh(ms)
     elif isinstance(sim, int):
         # sim is the target number of faces
         ms.simplification_quadric_edge_collapse_decimation(
             targetfacenum = sim,
-            qualityweight = True
+            qualityweight = True,
+            preservenormal = True
         )
         flag = _fix_mesh(ms)
     else:
@@ -693,7 +701,8 @@ def simplify(mesh, sim):
         nface = min(nface, int(nvertex*0.8))
         ms.simplification_quadric_edge_collapse_decimation(
             targetfacenum = nface,
-            qualityweight = True
+            qualityweight = True,
+            preservenormal = True
         )
         flag = _fix_mesh(ms)
 
@@ -701,7 +710,8 @@ def simplify(mesh, sim):
             ms_temp = dcp(ms)
             ms_temp.simplification_quadric_edge_collapse_decimation(
                 targetperc = 0.5,
-                qualityweight = True
+                qualityweight = True,
+                preservenormal = True
             )
             flag = _fix_mesh(ms_temp)
             if flag: ms = ms_temp
