@@ -36,11 +36,10 @@ class Geom():
         ])
 
     def __init__(self) -> None:
-        self.c = np.array([[1], [1], [1]])
+        self.color = np.array([[1], [1], [1]])
         self.points = None
         self.normals = None
         self.keep = None
-        self.on = None
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry."""
@@ -62,7 +61,7 @@ class Geom():
     def volume(self):
         raise NotImplementedError
 
-    def update(self, mask, on=None) -> None:
+    def update(self, mask) -> None:
         """Update the mask `keep` and 'normals'.
 
         Args:
@@ -70,20 +69,23 @@ class Geom():
             on (ndarray): mask of on-boundary points.
         """
         self.keep = np.logical_and(self.keep, mask.reshape(-1))
-        if on is not None:
-            self.on = np.logical_or(self.on, on.reshape(-1))
 
-    def output(self):
+    def output(self, mask=None):
         """Output all valid points.
             Valid points do not intersect with other geometries. 
 
         Returns:
             tuple: valid points and their out-pointing normals.
         """
-        p = self.points[:, self.keep]
-        n = self.normals[:, self.keep]
-        c = np.repeat(self.c, p.shape[1], axis=1)
-        return p, n, c, self.on
+        if mask:
+            keep = self.keep & mask
+        else:
+            keep = self.keep
+        
+        p = self.points[:, keep]
+        n = self.normals[:, keep]
+        color = np.repeat(self.color, p.shape[1], axis=1)
+        return p, n, color
 
     def __len__(self) -> int:
         return np.count_nonzero(self.keep)
@@ -96,7 +98,7 @@ class Geom():
             y = {'min': -np.inf, 'max': -np.inf}
             z = {'min': -np.inf, 'max': -np.inf}
         else:
-            p, _, _, _ = self.output()
+            p, _, _ = self.output()
             x = {'min': np.min(p[0,:]), 'max': np.max(p[0,:])}
             y = {'min': np.min(p[1,:]), 'max': np.max(p[1,:])}
             z = {'min': np.min(p[2,:]), 'max': np.max(p[2,:])}
@@ -125,13 +127,12 @@ class Sphere(Geom):
                 two keys: `position` and `radius`.
         """
         super().__init__()
-        self.c = self.colors[1].reshape(4, 1)
+        self.color = self.colors[1].reshape(4, 1)
         self.r = soma['radius']
         self.center = soma['position'].reshape(3, 1)
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
-        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -141,7 +142,7 @@ class Sphere(Geom):
             eps (float, optional): margin of the boundary. Defaults to 1e-14.
 
         Returns:
-            tuple: contains three masks
+            tuple: contains four masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
                 `outer`: mask of outer points;
@@ -154,7 +155,7 @@ class Sphere(Geom):
         inner = dist < -eps
         on = (-eps <= dist) & (dist <= eps)
         outer = dist > eps
-        out_near = (dist > 0) & (dist < 0.01)
+        out_near = (dist > eps) & (dist < 0.1*geom.r_min)
         return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
@@ -203,7 +204,7 @@ class Sphere(Geom):
 class Ellipsoid(Geom):
     def __init__(self, soma, density) -> None:
         super().__init__()
-        self.c = self.colors[1].reshape(4, 1)
+        self.color = self.colors[1].reshape(4, 1)
         self.center = soma[0]['position'].reshape(3, 1)
         # axes
         self.a = soma[0]['radius']
@@ -211,13 +212,13 @@ class Ellipsoid(Geom):
         self.c_axis = soma[1]['position'] - soma[2]['position']
         self.c_axis = self.c_axis.reshape(3, 1)
         self.c = LA.norm(self.c_axis) / 2
-        # translation
+        # transformation
         self._translation = self.center
         self._rotation = self.rotation_matrix
+        # point cloud
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
-        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -227,7 +228,7 @@ class Ellipsoid(Geom):
             eps (float, optional): margin of the boundary. Defaults to 1e-14.
 
         Returns:
-            tuple: contains three masks
+            tuple: contains four masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
                 `outer`: mask of outer points;
@@ -236,13 +237,13 @@ class Ellipsoid(Geom):
         # transform points to local coordinate
         points = self._rotation.T @ (geom.points - self._translation)
         
-        axes = np.abs([[self.a, self.b, self.c]]).T
+        axes = np.array([[self.a, self.b, self.c]]).T
         dist = LA.norm(points / axes, axis=0) - 1
         # masks
-        inner = dist <= -eps
-        on = (dist > -eps) & (dist < eps)
-        outer = dist >= eps
-        out_near = (dist > 0) & (dist < 0.01)
+        inner = dist < -eps
+        on = (-eps <= dist) & (dist <= eps)
+        outer = dist > eps
+        out_near = (dist > eps) & (dist < 0.01)
         return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
@@ -318,19 +319,19 @@ class Ellipsoid(Geom):
 class Cylinder(Geom):
     def __init__(self, soma, density) -> None:
         super().__init__()
-        self.c = self.colors[1].reshape(4, 1)
+        self.color = self.colors[1].reshape(4, 1)
         self.center = soma[0]['position'].reshape(3, 1)
         self.r = soma[0]['radius']
         self.axis = soma[1]['position'] - soma[2]['position']
         self.axis = self.axis.reshape(3, 1)
         self.h = LA.norm(self.axis)
-        # translation
+        # transformation
         self._translation = self.center
         self._rotation = self.rotation_matrix
+        # point cloud
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
-        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -340,7 +341,7 @@ class Cylinder(Geom):
             eps (float, optional): margin of the boundary. Defaults to 1e-14.
 
         Returns:
-            tuple: contains three masks
+            tuple: contains four masks
                 `inner`: mask of inner points;
                 `on`: mask of points on the boundary;
                 `outer`: mask of outer points;
@@ -349,12 +350,22 @@ class Cylinder(Geom):
         # transform points to local coordinate
         points = self._rotation.T @ (geom.points - self._translation)
         dist = LA.norm(points[:2, :], axis=0) - self.r
-        mask_in = (points[2, :] <= self.h/2) & (points[2, :] >= -self.h/2)
+
         # masks
-        inner = mask_in & (dist <= -eps)
-        on = mask_in & (dist > -eps) & (dist < eps)
-        outer = (dist >= eps) | ~mask_in
-        out_near = (dist > 0) & (dist < 0.01) & outer
+        mask_in = (points[2, :] < self.h/2-eps) & (points[2, :] > -self.h/2+eps)
+        mask_updown = ((points[2, :] >= self.h/2-eps)&(points[2, :] <= self.h/2+eps)) | \
+            ((points[2, :] >= -self.h/2-eps)&(points[2, :] <= -self.h/2+eps))
+        
+        inner = mask_in & (dist < -eps)
+        on = (mask_in & (dist >= -eps) & (dist <= eps)) | (mask_updown & (dist <= 0))
+        outer = (dist > eps) | ~(mask_in & mask_updown)
+        out_near = ((dist > eps) & (dist < 0.1*geom.r_min) & mask_in) | \
+                    ((points[2, :] >= self.h/2+eps) 
+                        & (points[2, :] < self.h/2+0.1*geom.r_min) 
+                        & (dist <= 0)) | \
+                    ((points[2, :] <= -self.h/2-eps) 
+                        & (points[2, :] > -self.h/2-0.1*geom.r_min) 
+                        & (dist <= 0))
         return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
@@ -422,14 +433,13 @@ class Cylinder(Geom):
 class Contour(Geom):
     def __init__(self, soma, density) -> None:
         super().__init__()
-        self.c = self.colors[1].reshape(4, 1)
+        self.color = self.colors[1].reshape(4, 1)
         self.center = soma[0]['position'].reshape(3, 1)
         self._translation = self.center
         self.density = density
         self.points, self.normals = self._create_points(soma)
         self._geometric_measures = self.geometric_measures
         self.keep = np.full(self.points.shape[1], True)
-        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -460,10 +470,10 @@ class Contour(Geom):
         # distance is saved in the quality array
         dist = ms.mesh(1).vertex_quality_array()
         # masks
-        inner = dist <= -eps
-        on = (dist > -eps) & (dist < eps)
-        outer = dist >= eps
-        out_near = (dist > 0) & (dist < 0.01)
+        inner = dist < -eps
+        on = (dist >= -eps) & (dist <= eps)
+        outer = dist > eps
+        out_near = (dist > eps) & (dist < 0.1*geom.r_min)
         return inner, on, outer, out_near
 
     def fix_normals(self, points, normals):
@@ -518,7 +528,7 @@ class Contour(Geom):
         cylin0['radius'] = np.max([cylin1['radius'], cylin2['radius']])
         temp_cylinder = Cylinder([cylin0, cylin1, cylin2], 1)
         # add points
-        p, _, _, _ = temp_cylinder.output()
+        p, _, _ = temp_cylinder.output()
         points.append(p)
         # new node
         parent_id = child_id
@@ -558,7 +568,6 @@ class Frustum(Geom):
         rb (float): frustum top radius.
         a (ndarray): frustum bottom center, size: [3 x 1].
         b (ndarray): frustum top center, size: [3 x 1].
-        center (ndarray): soma center, size: [3 x 1].
         points (ndarray): coordinates of sampled points,
             size: [3 x npoint].
         normals (ndarray): out-pointing normal vectors,
@@ -580,7 +589,7 @@ class Frustum(Geom):
                 A dictionary with two keys: `position` and `radius`.
         """
         super().__init__()
-        self.c = self.colors[end['type']].reshape(4, 1)
+        self.color = self.colors[end['type']].reshape(4, 1)
         self.ra = start['radius']
         self.rb = end['radius']
         self.a = start['position'].reshape(3, 1)
@@ -590,7 +599,6 @@ class Frustum(Geom):
         self.density = density
         self.points, self.normals = self._create_points()
         self.keep = np.full(self.points.shape[1], True)
-        self.on = np.full(self.points.shape[1], False)
 
     def intersect(self, geom, eps=1e-14):
         """Check intersection with another geometry.
@@ -610,22 +618,28 @@ class Frustum(Geom):
         points = geom.points - self._translation
         points = self._rotation.T @ points
 
+        # get r_min
+        if isinstance(geom, Frustum):
+            r_min = min(geom.r_min, self.r_min)
+        else:
+            r_min = self.r_min
+
         # top
         top_mask = points[2, :] >= self.h
         dist = LA.norm(points - np.array([[0,0,self.h]]).T, axis=0)
         dist = dist - self.rb
         top_in, top_on, top_out, top_near = \
-            self._create_masks(top_mask, dist, eps)
+            self._create_masks(top_mask, dist, eps, r_min)
         # bottom
         bottom_mask = points[2, :] <= 0
         dist = LA.norm(points, axis=0) - self.ra
         bottom_in, bottom_on, bottom_out, bottom_near = \
-            self._create_masks(bottom_mask, dist, eps)
+            self._create_masks(bottom_mask, dist, eps, r_min)
         # lateral
         lateral_mask = (points[2, :] > 0) & (points[2, :] < self.h)
         dist = LA.norm(points[:2, :], axis=0) - self._r(points[2, :])
         lateral_in, lateral_on, lateral_out, lateral_near = \
-            self._create_masks(lateral_mask, dist, eps)
+            self._create_masks(lateral_mask, dist, eps, r_min)
 
         # assemble masks
         inner = top_in | lateral_in | bottom_in
@@ -795,28 +809,6 @@ class Frustum(Geom):
         points[0, :] = np.cos(theta) * self._r(z)
         points[1, :] = np.sin(theta) * self._r(z)
         points[2, :] = z
-        # rmin = self.r_min
-        # rmax = self.r_max
-        # if (rmax - rmin) / self.slant_h > 0.1:
-        #     r = lambda h: rmin + (rmax - rmin) * h / self.h
-        #     slant = rmin * self.slant_h / (rmax - rmin)
-        #     # Create points, distribute more points on the rmax side
-        #     temp = np.sqrt(slant / (self.slant_h + slant))
-        #     y = (self.slant_h * y + slant) / (self.slant_h + slant)
-        #     z = self.h * (np.sqrt(y) - temp) / (1 - temp)
-        #     points[0, :] = np.cos(theta) * r(z)
-        #     points[1, :] = np.sin(theta) * r(z)
-        #     if self.ra < self.rb:
-        #         points[2, :] = z
-        #     else:
-        #         points[0:2, :] = points[0:2, ::-1]
-        #         points[2, :] = z
-        # else:
-        #     # frustum is similar to a cylinder
-        #     z = self.h * y
-        #     points[0, :] = np.cos(theta) * self._r(z)
-        #     points[1, :] = np.sin(theta) * self._r(z)
-        #     points[2, :] = z
         return points, theta
 
     @property
@@ -911,12 +903,12 @@ class Frustum(Geom):
         return self.top_volume + self.lateral_volume + self.bottom_volume
     
     @staticmethod
-    def _create_masks(mask, dist, eps):
+    def _create_masks(mask, dist, eps, r_min):
         """Create masks for inner, on-interface and outer points."""
         inner = mask & (dist < -eps)
         on = mask & (-eps <= dist) & (dist <= eps)
         outer = mask & (eps < dist)
-        out_near = mask & (dist > 0) & (dist < 0.01)
+        out_near = mask & (dist > eps) & (dist < 0.1*r_min)
         return inner, on, outer, out_near
 
 

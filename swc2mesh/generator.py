@@ -85,7 +85,7 @@ class Swc2mesh():
                  simplification = False
                 ) -> None:
         """legal compartment list = ['undefined', ..., 'glia_processes',
-            'neuron', 'all', 'soma+...']"""
+            'neuron', 'all', 'soma+...', 'neuron-...']"""
         # the depth of the screened poisson surface reconstruction method
         if depth is not None:
             self.depth = depth
@@ -117,8 +117,8 @@ class Swc2mesh():
                 self.meshes[compartment].append(imesh)
 
     def _create_geoms_list(self, compartment):
-        """Create the list `geoms` containing the building units
-            for the compartment.
+        """Create the list `geoms` containing several lists of 
+            the building units for the compartment.
         """
         # get the compartment number
         cmpt_type = self._cmpt_number(compartment)
@@ -199,7 +199,7 @@ class Swc2mesh():
         quality_list, color_list = [], []
         r_min = np.inf
         for igeom in geom:
-            p, n, c, on = igeom.output()
+            p, n, c = igeom.output()
             point_list.append(p)
             normal_list.append(n)
             # color_list.append(c)
@@ -209,8 +209,8 @@ class Swc2mesh():
             # quality_list.append(q)
 
         if r_min <= 0.1:
-            warnings.warn(f"Neuron has some extremely fine neurites (< {r_min}um). "\
-                + "Manual post-clearning could be needed.")
+            warnings.warn(f"Neuron has some extremely fine neurites ({r_min}um). "\
+                + "Manual post-cleaning might be needed.")
         
         points = np.concatenate(point_list, axis=1)
         normals = np.concatenate(normal_list, axis=1)
@@ -421,21 +421,48 @@ class Swc2mesh():
         collision_index_pairs = self.aabb(geom)
         for i, j in collision_index_pairs:
             if len(geom[i]) != 0 and len(geom[j]) != 0:
-                self._parent_child_intersect(geom, i, j)
+                self._parent_child_intersect(geom, i, j, remove_close_points = True)
         return geom
 
     @staticmethod
-    def _parent_child_intersect(geom, p, c) -> None:
-        # TODO: 去除两点特别近，法向成钝角
+    def _parent_child_intersect(geom, p, c, remove_close_points = False) -> None:
         # update parent
-        [_, on, outer, out_near] = geom[c].intersect(geom[p])
-        geom[p].update(
-            np.logical_or(on, outer),
-            np.logical_or(on, out_near)
-            )
+        [_, p_on, p_outer, p_out_near] = geom[c].intersect(geom[p])
+        geom[p].update(np.logical_or(p_on, p_outer))
         # update child
-        [_, _, outer, _] = geom[p].intersect(geom[c])
-        geom[c].update(outer)
+        [_, _, c_outer, c_out_near] = geom[p].intersect(geom[c])
+        geom[c].update(c_outer)
+
+        # TODO: 去除两点特别近，法向成钝角
+        if remove_close_points:
+            # get r_min
+            if isinstance(geom[p], Frustum):
+                r_min = min(geom[p].r_min, geom[c].r_min)
+            else:
+                r_min = geom[c].r_min
+
+            p_points, p_normals, _ = geom[p].output(p_out_near)
+            c_points, c_normals, _ = geom[c].output(c_out_near)
+            if p_points.size * c_points.size != 0:
+                # compute distance between two point clouds
+                p_points = p_points.T.reshape((-1, 1, 3))
+                c_points = c_points.T.reshape((1, -1, 3))
+                dist = np.linalg.norm(p_points - c_points, axis=2)
+                # compute angle between normals
+                angle = p_normals.T @ c_normals
+                # remove close points
+                mask_far = (dist >= 0.1*r_min) | (angle >= 0)
+                if not mask_far.all():
+                    p_mask = np.all(mask_far, axis=1)
+                    c_mask = np.all(mask_far, axis=0)
+                    # remove parent's points
+                    p_keep = dcp(geom[p].keep)
+                    p_keep[p_keep & p_out_near] = p_mask
+                    geom[p].update(p_keep)
+                    # remove child's points
+                    c_keep = dcp(geom[c].keep)
+                    c_keep[c_keep & c_out_near] = c_mask
+                    geom[c].update(c_keep)
 
     def _fix_normals(self, points, normals, geom):
         start = 0
@@ -548,6 +575,7 @@ class Swc2mesh():
                         swc['soma'].append(entry)
                     else:
                         swc['neurites'].append(entry)
+
         # process soma according to the required soma shape
         self._process_soma(swc['soma'])
         return swc
@@ -668,6 +696,7 @@ def _fix_mesh(ms):
     pass
 
 def simplify(mesh, sim):
+    # TODO
     if isinstance(mesh, mlab.Mesh):
         ms = mlab.MeshSet()
         ms.add_mesh(mesh)
