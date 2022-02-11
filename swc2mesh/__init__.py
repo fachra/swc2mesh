@@ -1,1 +1,1 @@
-from .generator import Swc2mesh
+from .generator import Swc2mesh, show

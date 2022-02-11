@@ -77,7 +77,7 @@ class Geom():
         Returns:
             tuple: valid points and their out-pointing normals.
         """
-        if mask:
+        if mask is not None:
             keep = self.keep & mask
         else:
             keep = self.keep
@@ -185,7 +185,7 @@ class Sphere(Geom):
                 `points`: coordinates of sampled points,
                 `normals`: out-pointing normal vectors.
         """
-        npoint = int(10 * self.density * self.area)
+        npoint = int(self.density * self.area)
         npoint = np.max([128, npoint])
         normals = unitsphere(int(npoint))
         return self.r * normals + self.center, normals
@@ -268,7 +268,7 @@ class Ellipsoid(Geom):
         return self._rotation @ normals
 
     def _create_points(self):
-        npoint = int(10 * self.density * self.area)
+        npoint = int(self.density * self.area)
         npoint = np.max([128, npoint])
         points, normals = ellipsoid(npoint, self.a, self.b, self.c)
         # move the local ellipsoid
@@ -390,7 +390,7 @@ class Cylinder(Geom):
         return self._rotation @ normals
 
     def _create_points(self):
-        npoint = int(10 * self.density * self.area)
+        npoint = int(self.density * self.area)
         npoint = np.max([128, npoint])
         points, normals = cylinder(npoint, self.r, self.h)
         # move the local cylinder
@@ -509,7 +509,7 @@ class Contour(Geom):
         ms.convex_hull()
         out_dict = ms.compute_geometric_measures()
         ms.poisson_disk_sampling(
-            samplenum = int(10*self.density*out_dict['surface_area'])
+            samplenum = int(self.density*out_dict['surface_area'])
             )
         points = ms.current_mesh().vertex_matrix().T
         normals = ms.current_mesh().vertex_normal_matrix().T

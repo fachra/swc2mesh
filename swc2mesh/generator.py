@@ -11,9 +11,9 @@ import time
 
 class Swc2mesh():
     """Convert neuronal SWC files to watertight surface meshes.
-
     More details can be found [here](http://neuromorpho.org/myfaq.jsp#QS3).
     """
+
     # compartment types
     types = (
         'undefined',
@@ -24,13 +24,15 @@ class Swc2mesh():
         'custom',
         'unspecified_neurites',
         'glia_processes'
-        )
+    )
+
+    # soma shape types
     soma_types = (
         'sphere',
         'ellipsoid',
         'cylinder',
         'contour'
-        )
+    )
 
     def __init__(self,
                  file = None,
@@ -39,9 +41,7 @@ class Swc2mesh():
                  use_scale = False,
                  depth = None
                 ) -> None:
-        # TODO:
-        # 1. simplification
-        # 2. post-cleaning
+
         self.file = file
         self.soma_shape = soma_shape
         self.to_origin = to_origin
@@ -53,8 +53,7 @@ class Swc2mesh():
             self.read_swc()
 
     def read_swc(self, file=None):
-        """Read the given SWC file 
-            and save the node info in the list `nodes`.
+        """Read the given SWC file and save the node info in `nodes`.
 
         Args:
             file (string, optional): path to the SWC file. Defaults to None.
@@ -62,6 +61,7 @@ class Swc2mesh():
         Raises:
             RuntimeError: the SWC file is not provided.
         """
+
         # check the SWC file
         if (file is None) and (self.file is None):
             raise RuntimeError('Please provide SWC file.')
@@ -72,7 +72,7 @@ class Swc2mesh():
         if not self.file.lower().endswith('.swc'):
             warnings.warn(f'{self.file} may not be in the SWC format.')
 
-        # parse the file
+        # read the file
         print(f"Read {self.file}.")
         self.swc = self._parse_swc()
         self.nodes = self._create_nodes()
@@ -86,6 +86,7 @@ class Swc2mesh():
                 ) -> None:
         """legal compartment list = ['undefined', ..., 'glia_processes',
             'neuron', 'all', 'soma+...', 'neuron-...']"""
+
         # the depth of the screened poisson surface reconstruction method
         if depth is not None:
             self.depth = depth
@@ -95,13 +96,15 @@ class Swc2mesh():
             # create meshes for all compartments and the neuron
             for cmpt in self.types + ('neuron',):
                 self.generate(savename, cmpt, density, depth, simplification)
+
         else:
             # set the point cloud density
             self.density = density
 
-            print(f"Construct {compartment} segments.")
             # create the list containing the building units
+            print(f"Construct {compartment} segments.")
             geoms = self._create_geoms_list(compartment)
+
             # build mesh for a certain compartment
             self.meshes[compartment] = []
             for ind, igeom in enumerate(geoms):
@@ -143,7 +146,7 @@ class Swc2mesh():
     def _cmpt_number(self, compartment):
         """Get the compartment number or a list of compartment numbers."""
         # create a deep copy of the compartment types
-        type_list = dcp(self.types)
+        type_list = list(self.types)
 
         # get the compartment number or the number list
         if compartment in type_list:
@@ -191,143 +194,90 @@ class Swc2mesh():
         else:
             raise ValueError(
                 f'Compartment "{compartment}" is illegal.')
+
         return cmpt_id
 
     def _build_mesh(self, geom, savename, simplification):
-        # construct point cloud
-        point_list, normal_list = [], []
-        quality_list, color_list = [], []
+        # initialization
+        point_list = []
+        normal_list = []
+        color_list = []
         r_min = np.inf
+
+        # construct point cloud
         for igeom in geom:
             p, n, c = igeom.output()
             point_list.append(p)
             normal_list.append(n)
-            # color_list.append(c)
+            color_list.append(c)
             if isinstance(igeom, Frustum):
                 r_min = min(r_min, igeom.r_min)
-            # q = igeom.quality()
-            # quality_list.append(q)
-
-        if r_min <= 0.1:
-            warnings.warn(f"Neuron has some extremely fine neurites ({r_min}um). "\
-                + "Manual post-cleaning might be needed.")
-        
         points = np.concatenate(point_list, axis=1)
         normals = np.concatenate(normal_list, axis=1)
-        # colors = np.concatenate(color_list, axis=1)
-        # quality = np.concatenate(quality_list, axis=1)
+        colors = np.concatenate(color_list, axis=1)
+        
+        if r_min <= 0.1:
+            error_msg = f"Neuron has some extremely fine neurites ({r_min}um). "\
+                + "Manual post-cleaning might be needed."
+            warnings.warn(error_msg)
 
-        # normals_esti = self._estimate_normals(points)
-        # normals_esti = self._fix_normals(points, normals_esti, geom)
-        # merge theoretical normals and estimated normals
-        # normals = 0*normals + 0.3*normals_esti
-        # normals = normals / np.linalg.norm(normals, axis=0)
-        # fix normals_esti based on normals
-        # cos_ang = np.einsum('ij,ij->j', normals_esti, normals)
-        # normals_esti2 = dcp(normals_esti)
-        # normals_esti2[:, cos_ang<0] *= -1
-
-        # with open("ans_esti_fix.ply", "w") as f:
-        #     f.write("ply\n")
-        #     f.write("format ascii 1.0\n")
-        #     f.write(f"element vertex {normals.shape[1]}\n")
-        #     f.write(f"property float x\n")
-        #     f.write(f"property float y\n")
-        #     f.write(f"property float z\n")
-        #     f.write(f"property float nx\n")
-        #     f.write(f"property float ny\n")
-        #     f.write(f"property float nz\n")
-        #     f.write(f"end_header\n")
-        #     for ii in range(points.shape[1]):
-        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {normals_esti2[0, ii]} {normals_esti2[1, ii]} {normals_esti2[2, ii]}\n"
-        #         f.write(p_str)
-        # f.close()
-
-        # ms = mlab.MeshSet()
-        # m = mlab.Mesh(
-        #         vertex_matrix = points.T, 
-        #         v_normals_matrix = normals.T
-        #     )
-        # ms.add_mesh(m)
-        # ms.smooths_normals_on_a_point_sets(k=8)
-        # nor_smooth = ms.current_mesh().vertex_normal_matrix().T
-        # with open("ans_ana_smooth.ply", "w") as f:
-        #     f.write("ply\n")
-        #     f.write("format ascii 1.0\n")
-        #     f.write(f"element vertex {normals.shape[1]}\n")
-        #     f.write(f"property float x\n")
-        #     f.write(f"property float y\n")
-        #     f.write(f"property float z\n")
-        #     f.write(f"property float nx\n")
-        #     f.write(f"property float ny\n")
-        #     f.write(f"property float nz\n")
-        #     f.write(f"end_header\n")
-        #     for ii in range(points.shape[1]):
-        #         p_str = f"{points[0, ii]} {points[1, ii]} {points[2, ii]} {nor_smooth[0, ii]} {nor_smooth[1, ii]} {nor_smooth[2, ii]}\n"
-        #         f.write(p_str)
-        # f.close()
-
-        # build surface
+        # assemble and clean point cloud
         ms = mlab.MeshSet()
         m = mlab.Mesh(
-                vertex_matrix = points.T, 
-                v_normals_matrix = normals.T,
-                # v_quality_array = quality.T,
-                # v_color_matrix = colors.T
-            )
+            vertex_matrix = points.T,
+            v_normals_matrix = normals.T,
+            v_color_matrix = colors.T
+        )
         ms.add_mesh(m)
         ms.remove_duplicate_vertices()
-        # ms.merge_close_vertices(threshold=mlab.Percentage(1))
-        ms.smooths_normals_on_a_point_sets(k=5)
+        ms.merge_close_vertices(threshold=mlab.Percentage(1))
         ms.normalize_vertex_normals()
-        nn = ms.current_mesh().vertex_normal_matrix().T
-        pp = ms.current_mesh().vertex_matrix().T
-        with open("Anstoetz_PV-IN6_pcd.ply", "w") as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            f.write(f"element vertex {pp.shape[1]}\n")
-            f.write(f"property float x\n")
-            f.write(f"property float y\n")
-            f.write(f"property float z\n")
-            f.write(f"property float nx\n")
-            f.write(f"property float ny\n")
-            f.write(f"property float nz\n")
-            f.write(f"end_header\n")
-            for ii in range(pp.shape[1]):
-                p_str = f"{pp[0, ii]} {pp[1, ii]} {pp[2, ii]} {nn[0, ii]} {nn[1, ii]} {nn[2, ii]}\n"
-                f.write(p_str)
-        f.close()
-
+        ms.smooths_normals_on_a_point_sets(k=5)
+        
+        # build surface
         depth = self._depth(r_min)
         print("Building mesh ...")
         start = time.time()
-        ms.surface_reconstruction_screened_poisson(depth=depth)
+        ms.surface_reconstruction_screened_poisson(
+            depth=depth,
+            preclean=True
+        )
         ms = remove_small_components(ms)
+        ms = reset_quality(ms)
         print(f"Elapsed time: {time.time() - start:.2f} s.")
 
         if simplification:
             print("Simplifying mesh ...")
             start = time.time()
-            ms = simplify(ms, simplification)
-            ms = remove_small_components(ms)
+            ms, flag = simplify(ms, simplification)
             print(f"Elapsed time: {time.time() - start:.2f} s.")
+        else:
+            ms, flag = _fix_mesh(ms)
+
+        if not flag:
+            print(f"Mesh is not watertight. Require manual repair.")
 
         if savename:
-            ms.save_current_mesh(savename)
-        m = ms.current_mesh()
-        return m
+            ms.save_current_mesh(savename, binary=False)
+
+        return ms
 
     def _create_soma(self):
         """Create the building unit for soma."""
+
         if self.soma_shape == 'sphere':
             soma = Sphere(self.nodes[0], self.density)
+
         elif self.soma_shape == 'ellipsoid':
             soma = Ellipsoid(self.nodes[:3], self.density)
+
         elif self.soma_shape == 'cylinder':
             soma = Cylinder(self.nodes[:3], self.density)
+
         elif self.soma_shape == 'contour':
             soma = Contour(
                     self.nodes[:len(self.swc['soma'])], self.density)
+
         return [soma]
 
     def _add_neurites(self, geoms, cmpt_type=None) -> None:
@@ -335,27 +285,33 @@ class Swc2mesh():
 
         Args:
             geoms (list): 2D list containing the building units.
-            cmpt_type (list, optional): list of needed compartment numbers. Defaults to None.
+            cmpt_type (list, optional): list of required compartment numbers. Defaults to None.
         """
+
         nodes = self.nodes
         d = self.density
         if geoms:
-            # soma is in geoms, add neurites to geom
+            # geoms is not empty, soma is in geoms
             geom = geoms[0]
             parent_id = 0
             parent_geom_index = 0
-            for child_id in nodes[parent_id]['children_id']:
+
+            # add neurites to geom
+            for child_id in nodes[parent_id]['children_id']:    
                 if (not cmpt_type or nodes[child_id]['type'] in cmpt_type) \
                     and (nodes[child_id]['type'] != 1):
-                    # child is neurite and is needed
+                    
+                    # child is neurite and is required
                     # prepare start and end position
                     start = dcp(nodes[parent_id])
                     start['radius'] = nodes[child_id]['radius']
                     end = nodes[child_id]
+
                     # add new geom
                     child_geom_index = len(geom)
                     geom.append(Frustum(start, end, d))
                     self._parent_child_intersect(geom, parent_geom_index, child_geom_index)
+                    
                     # create subsequent frustums of child_id (deep-first)
                     self._add_frustums(geom, child_id, child_geom_index, cmpt_type)
             
@@ -368,13 +324,16 @@ class Swc2mesh():
             for child_id in nodes[soma_id]['children_id']:
                 if (not cmpt_type or nodes[child_id]['type'] in cmpt_type) \
                     and (nodes[child_id]['type'] != 1):
-                    # child is neurite and is needed
+                    
+                    # child is neurite
                     igeom = []
+                    
                     # create the first neurite segement starting at the soma center
                     start = dcp(nodes[soma_id])
                     start['radius'] = nodes[child_id]['radius']
                     end = nodes[child_id]
                     igeom.append(Frustum(start, end, d))
+                    
                     # create subsequent frustums of child_id (deep-first)
                     self._add_frustums(igeom, child_id, 0, cmpt_type)
                     self._check_all_intersect(igeom)
@@ -387,16 +346,20 @@ class Swc2mesh():
             geom (list): list of building units.
             parent_id (int): parent node id in the list `nodes`.
             parent_geom_index (int): parent node index in the list `geom`.
-            cmpt_type (list, optional): list of needed compartment numbers. Defaults to None.
+            cmpt_type (list, optional): list of required compartment numbers. Defaults to None.
         """
+
         d = self.density
         nodes = self.nodes
+
         while len(nodes[parent_id]['children_id']) == 1:
+            
             # without bifurcation, looping to add segements
             child_id = nodes[parent_id]['children_id'][0]
             child_geom_index = len(geom)
             geom.append(Frustum(nodes[parent_id], nodes[child_id], d))
             self._parent_child_intersect(geom, parent_geom_index, child_geom_index)
+            
             # create next frustums
             parent_id = child_id
             parent_geom_index = child_geom_index
@@ -406,9 +369,11 @@ class Swc2mesh():
             for child_id in nodes[parent_id]['children_id']:
                 if (not cmpt_type or nodes[child_id]['type'] in cmpt_type) \
                     and (nodes[child_id]['type'] != 1):
+
                     child_geom_index = len(geom)
                     geom.append(Frustum(nodes[parent_id], nodes[child_id], d))
                     self._parent_child_intersect(geom, parent_geom_index, child_geom_index)
+                    
                     # add subsequent frustums
                     self._add_frustums(geom, child_id, child_geom_index, cmpt_type)
 
@@ -421,11 +386,11 @@ class Swc2mesh():
         collision_index_pairs = self.aabb(geom)
         for i, j in collision_index_pairs:
             if len(geom[i]) != 0 and len(geom[j]) != 0:
-                self._parent_child_intersect(geom, i, j, remove_close_points = True)
+                self._parent_child_intersect(geom, i, j, remove_close_points=True)
         return geom
 
     @staticmethod
-    def _parent_child_intersect(geom, p, c, remove_close_points = False) -> None:
+    def _parent_child_intersect(geom, p, c, remove_close_points=False) -> None:
         # update parent
         [_, p_on, p_outer, p_out_near] = geom[c].intersect(geom[p])
         geom[p].update(np.logical_or(p_on, p_outer))
@@ -433,7 +398,6 @@ class Swc2mesh():
         [_, _, c_outer, c_out_near] = geom[p].intersect(geom[c])
         geom[c].update(c_outer)
 
-        # TODO: 去除两点特别近，法向成钝角
         if remove_close_points:
             # get r_min
             if isinstance(geom[p], Frustum):
@@ -452,6 +416,7 @@ class Swc2mesh():
                 angle = p_normals.T @ c_normals
                 # remove close points
                 mask_far = (dist >= 0.1*r_min) | (angle >= 0)
+                mask_far = mask_far & ~(dist < 0.02*r_min)
                 if not mask_far.all():
                     p_mask = np.all(mask_far, axis=1)
                     c_mask = np.all(mask_far, axis=0)
@@ -486,11 +451,11 @@ class Swc2mesh():
             elif r_min > 0.25:
                 depth = 14
             elif r_min > 0.1:
-                depth = 16
+                depth = 15
             elif r_min > 0.05:
-                depth = 18
+                depth = 17
             else:
-                depth = 20
+                depth = 18
         else:
             depth = self.depth
         return depth
@@ -693,15 +658,43 @@ def _aabb_collision(aabb_pair):
         return True
 
 def _fix_mesh(ms):
-    pass
+    ms.remove_duplicate_vertices()
+    ms.remove_duplicate_faces()
+    ms.remove_zero_area_faces()
+    ms.remove_unreferenced_vertices()
+
+    for _ in range(5):
+        ms.select_self_intersecting_faces()
+        ms.delete_selected_faces_and_vertices()
+        ms.remove_t_vertices()
+        ms.repair_non_manifold_edges()
+        try:
+            ms.close_holes()
+            ms.laplacian_smooth(stepsmoothnum=6, selected=True)
+        except:
+            pass
+
+        ms.select_self_intersecting_faces()
+        ms.delete_selected_faces_and_vertices()
+        ms.remove_t_vertices()
+        ms.repair_non_manifold_edges()
+        try:
+            ms.close_holes()
+            ms.close_holes()
+            res = ms.close_holes()
+            if is_watertight(ms) and \
+                (res['closed_holes']+res['new_faces'] == 0):
+                return ms, True
+        except:
+            pass
+    return ms, False
 
 def simplify(mesh, sim):
-    # TODO
     if isinstance(mesh, mlab.Mesh):
         ms = mlab.MeshSet()
         ms.add_mesh(mesh)
     elif isinstance(mesh, mlab.MeshSet):
-        ms = dcp(mesh)
+        ms = dcp_meshset(mesh)
     else:
         raise TypeError("Unsupported mesh type.")
 
@@ -712,38 +705,62 @@ def simplify(mesh, sim):
             qualityweight = True,
             preservenormal = True
         )
-        flag = _fix_mesh(ms)
-    elif isinstance(sim, int):
+        ms = remove_small_components(ms)
+        ms, flag = _fix_mesh(ms)
+
+    elif (not isinstance(sim, bool)) and isinstance(sim, int):
         # sim is the target number of faces
         ms.simplification_quadric_edge_collapse_decimation(
             targetfacenum = sim,
             qualityweight = True,
             preservenormal = True
         )
-        flag = _fix_mesh(ms)
-    else:
-        # sim is not False or None
+        ms = remove_small_components(ms)
+        ms, flag = _fix_mesh(ms)
+
+    elif isinstance(sim, str) and sim.endswith('area'):
+        # get the simplification percentage
+        try:
+            target = float(sim[:-4])
+        except:
+            raise ValueError(f'Invalid simplification parameter: {sim}.')
+
         geo_measure = ms.compute_geometric_measures()
         area = geo_measure['surface_area']
-        nface = int(50 * area)
-        nvertex = ms.current_mesh().vertex_number()
-        nface = min(nface, int(nvertex*0.8))
         ms.simplification_quadric_edge_collapse_decimation(
-            targetfacenum = nface,
+            targetfacenum = int(target * area),
             qualityweight = True,
             preservenormal = True
         )
-        flag = _fix_mesh(ms)
+        ms = remove_small_components(ms)
+        ms, flag = _fix_mesh(ms)
 
-        while flag or ms.current_mesh().vertex_number() > 2*area:
-            ms_temp = dcp(ms)
+    else:
+        # sim is not False or None
+        flag = True
+        iter = 1
+
+        geo_measure = ms.compute_geometric_measures()
+        area = geo_measure['surface_area']
+
+        while flag and ms.current_mesh().face_number() > 0.5*area:
+            ms_temp = dcp_meshset(ms)
             ms_temp.simplification_quadric_edge_collapse_decimation(
-                targetperc = 0.5,
+                targetperc = 0.8,
                 qualityweight = True,
                 preservenormal = True
             )
-            flag = _fix_mesh(ms_temp)
-            if flag: ms = ms_temp
+            ms_temp = remove_small_components(ms_temp)
+            ms_temp, flag = _fix_mesh(ms_temp)
+
+            if flag: 
+                ms = dcp_meshset(ms_temp)
+                iter = iter + 1
+            
+            elif iter>1:
+                flag = True
+                break
+
     return ms, flag
 
 def remove_small_components(mesh):
@@ -756,14 +773,42 @@ def remove_small_components(mesh):
     ms.delete_selected_faces_and_vertices()
     return ms
 
-def post_cleaning(ms):
-    ms.remove_duplicate_vertices()
-    ms.remove_duplicate_faces()
-    ms.remove_zero_area_faces()
-    ms.remove_t_vertices()
-    ms.remove_unreferenced_vertices()
+def reset_quality(mesh):
+    m = mesh.current_mesh()
+    color_matrix = m.vertex_color_matrix()[:, :3]
+    # soma_mask
+    color_norm = np.linalg.norm(color_matrix - \
+        np.array([0.77, 0.3, 0.34]), axis=1)
+    soma_mask = color_norm < 0.05
+    # axon mask
+    color_norm = np.linalg.norm(color_matrix - \
+        np.array([0.7, 0.7, 0.7]), axis=1)
+    axon_mask = color_norm < 0.1
 
-def show(m) -> None:
+    # quality
+    quality = np.ones_like(color_norm)*10
+    quality[soma_mask] = 0.01
+    quality[axon_mask] = 10000
+
+    m_new = mlab.Mesh(
+            vertex_matrix = m.vertex_matrix(),
+            face_matrix = m.face_matrix(),
+            v_normals_matrix = m.vertex_normal_matrix(),
+            f_normals_matrix = m.face_normal_matrix(),
+            v_color_matrix = m.vertex_color_matrix(),
+            v_quality_array = quality
+        )
+    ms = mlab.MeshSet()
+    ms.add_mesh(m_new)
+    return ms
+
+def dcp_meshset(meshset):
+    ms = mlab.MeshSet()
+    ms.add_mesh(meshset.current_mesh())
+    return ms
+
+def show(ms):
+    m = ms.current_mesh()
     tmesh = Trimesh(
                 process = False,
                 use_embree = False,
@@ -771,7 +816,19 @@ def show(m) -> None:
                 faces = m.face_matrix(),
                 face_normals = m.face_normal_matrix(),
                 vertex_normals = m.vertex_normal_matrix(),
-                # face_colors = m.face_color_matrix(),
-                # vertex_colors = m.vertex_color_matrix()
+                vertex_colors = m.vertex_color_matrix()
             )
-    tmesh.show()
+    return tmesh.show()
+
+def is_watertight(ms):
+    m = ms.current_mesh()
+    tmesh = Trimesh(
+                process = False,
+                use_embree = False,
+                vertices = m.vertex_matrix(),
+                faces = m.face_matrix(),
+                face_normals = m.face_normal_matrix(),
+                vertex_normals = m.vertex_normal_matrix(),
+                vertex_colors = m.vertex_color_matrix()
+            )
+    return tmesh.is_watertight
