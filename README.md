@@ -1,2 +1,2 @@
 # swc2mesh
-Convert neuronal SWC files to watertight surface meshes.
+Convert cellular SWC files to watertight surface meshes.
