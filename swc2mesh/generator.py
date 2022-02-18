@@ -1000,6 +1000,7 @@ def remove_small_components(mesh):
 
 def _fix_mesh(ms):
     """Remove bad faces and close holes.
+    The procedure depends entirely on author's experience.
 
     Args:
         ms (mlab.MeshSet): Meshlab meshset.
@@ -1021,6 +1022,8 @@ def _fix_mesh(ms):
         ms.select_self_intersecting_faces()
         ms.delete_selected_faces_and_vertices()
         ms.remove_t_vertices()
+        ms.remove_t_vertices()
+        ms.repair_non_manifold_edges()
         ms.repair_non_manifold_edges()
 
         # close holes
@@ -1028,12 +1031,14 @@ def _fix_mesh(ms):
             ms.close_holes()
             ms.laplacian_smooth(stepsmoothnum=6, selected=True)
         except:
-            pass
+            ms.laplacian_smooth(stepsmoothnum=3, selected=False)
 
         # delete bad faces and vertices
         ms.select_self_intersecting_faces()
         ms.delete_selected_faces_and_vertices()
         ms.remove_t_vertices()
+        ms.remove_t_vertices()
+        ms.repair_non_manifold_edges()
         ms.repair_non_manifold_edges()
 
         # close holes
@@ -1042,11 +1047,12 @@ def _fix_mesh(ms):
             ms.close_holes()
             res = ms.close_holes()
             # mesh is watertight, exit
-            if is_watertight(ms) and \
-                    (res['closed_holes']+res['new_faces'] == 0):
+            if res['closed_holes']+res['new_faces'] == 0:
                 return ms, True
+            else:
+                ms.laplacian_smooth(stepsmoothnum=3, selected=False)
         except:
-            pass
+            ms.laplacian_smooth(stepsmoothnum=3, selected=False)
 
     return ms, False
 
