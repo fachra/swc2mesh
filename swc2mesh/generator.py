@@ -524,10 +524,12 @@ class Swc2mesh():
             msg = "Mesh is not watertight. Require manual repair."
             warnings.warn(msg, UserWarning, stacklevel=2)
 
-        if meshname.endswith((".ply", ".stl")):
-            ms.save_current_mesh(meshname, binary=False)
-        elif meshname:
-            ms.save_current_mesh(meshname)
+        if meshname:
+            print(f"Save mesh to {meshname}")
+            if meshname.endswith((".ply", ".stl")):
+                ms.save_current_mesh(meshname, binary=False)
+            else:
+                ms.save_current_mesh(meshname)
 
         return ms
 
