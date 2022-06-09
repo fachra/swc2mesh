@@ -64,6 +64,7 @@ class Swc2mesh():
         self.to_origin = to_origin
         self.use_scale = use_scale
         self.depth = depth
+        self.cmpt_mask = np.full((8,), False)
         self.scale = np.ones(3)
         self.meshes = dict()
         self.swc = dict()
@@ -186,6 +187,10 @@ class Swc2mesh():
                         swc['soma'].append(entry)
                     else:
                         swc['neurites'].append(entry)
+
+                    # record cmpt type
+                    if not self.cmpt_mask[node_type]:
+                        self.cmpt_mask[node_type] = True
 
         # set soma shape based on self.soma_shape
         self._set_soma_shape(swc['soma'])
@@ -338,7 +343,7 @@ class Swc2mesh():
 
             # create the list of building units
             print(f"Create '{compartment}' segments.")
-            segments = self._create_segments(compartment)
+            segments, cmpt_mask = self._create_segments(compartment)
 
             # build meshes for compartment
             self.meshes[compartment] = []
@@ -352,7 +357,7 @@ class Swc2mesh():
                 print(
                     f"Build mesh for '{compartment}' [{ind+1}/{len(segments)}]")
                 self.meshes[compartment].append(
-                    self._build_mesh(isegs, name, simplification)
+                    self._build_mesh(isegs, name, cmpt_mask, simplification)
                 )
 
         return None
@@ -363,7 +368,7 @@ class Swc2mesh():
         """
 
         # get the compartment number
-        cmpt_type = self._cmpt_number(compartment)
+        cmpt_type, cmpt_mask = self._cmpt_number(compartment)
 
         # save building units in segments
         segments = []
@@ -386,19 +391,22 @@ class Swc2mesh():
         elif cmpt_type in [0, 2, 3, 4, 5, 6, 7]:
             self._add_neurites(segments, cmpt_type=[cmpt_type])
 
-        return segments
+        return segments, cmpt_mask
 
     def _cmpt_number(self, compartment):
         """Get the compartment number or a list of compartment numbers."""
 
-        # create a deep copy of the compartment types
+        # create a deep copy of the compartment types and mask
         type_list = list(self.types)
+        mask_list = dcp(self.cmpt_mask)
 
         err_msg = f"Unkonwn compartment '{compartment}'."
 
         # case: soma or neurites
         if compartment in type_list:
             cmpt_id = type_list.index(compartment)
+            mask_list = mask_list & False
+            mask_list[cmpt_id] = True
 
         # case: cell
         elif compartment == 'cell':
@@ -410,14 +418,18 @@ class Swc2mesh():
             # e.g., compartment = 'soma+axon+basal_dendrite'
             # cmpt_id only contains the number of neurites
 
+            # initialization
             cmpt_id = []
             cmpts = compartment.split('+')
+            mask_list = mask_list & False
 
             if cmpts[0] == 'soma':
                 type_list.remove('soma')
+                mask_list[self.types.index('soma')] = True
                 for icmpt in cmpts[1:]:
                     if icmpt in type_list:
                         cmpt_id.append(self.types.index(icmpt))
+                        mask_list[self.types.index(icmpt)] = True
                     else:
                         raise ValueError(err_msg)
             else:
@@ -436,6 +448,7 @@ class Swc2mesh():
                 for icmpt in cmpts[1:]:
                     if icmpt in type_list:
                         type_list.remove(icmpt)
+                        mask_list[self.types.index(icmpt)] = False
                     else:
                         raise ValueError(err_msg)
             else:
@@ -447,14 +460,15 @@ class Swc2mesh():
         else:
             raise ValueError(err_msg)
 
-        return cmpt_id
+        return cmpt_id, mask_list
 
-    def _build_mesh(self, segs, meshname, simplification):
+    def _build_mesh(self, segs, meshname, cmpt_mask, simplification):
         """Build a single mesh based on a segment list.
 
         Args:
             segs (list): list of segments.
             meshname (str): filename to which the mesh is saved.
+            cmpt_mask (ndarray): mask of existing compartments.
             simplification (bool, float, str): simplification parameter.
 
         Returns:
@@ -495,7 +509,7 @@ class Swc2mesh():
         )
         ms.add_mesh(m)
         ms.remove_duplicate_vertices()
-        ms.merge_close_vertices(threshold=mlab.Percentage(1))
+        # ms.merge_close_vertices(threshold=mlab.Percentage(1))
         ms.normalize_vertex_normals()
         ms.smooths_normals_on_a_point_sets(k=5)
 
@@ -508,14 +522,14 @@ class Swc2mesh():
             preclean=True
         )
         ms = remove_small_components(ms)
-        ms = _reset_quality(ms)
+        ms = _reset_color_quality(ms, cmpt_mask)
         print(f"Elapsed time: {time.time() - start:.4f} s.")
 
         # post-cleaning
         if simplification:
             print("Simplifying mesh ...")
             start = time.time()
-            ms, flag = simplify(ms, simplification)
+            ms, flag = simplify(ms, simplification, self.density)
             print(f"Elapsed time: {time.time() - start:.4f} s.")
         else:
             ms, flag = _fix_mesh(ms)
@@ -758,19 +772,19 @@ class Swc2mesh():
 
         if self.depth is None:
             if r_min > 2:
-                depth = 10
-            elif r_min > 1:
                 depth = 12
-            elif r_min > 0.5:
+            elif r_min > 1:
                 depth = 13
-            elif r_min > 0.25:
-                depth = 14
-            elif r_min > 0.1:
+            elif r_min > 0.5:
                 depth = 15
-            elif r_min > 0.05:
+            elif r_min > 0.25:
+                depth = 16
+            elif r_min > 0.1:
                 depth = 17
-            else:
+            elif r_min > 0.05:
                 depth = 18
+            else:
+                depth = 19
 
         else:
             depth = int(self.depth)
@@ -863,12 +877,13 @@ def _aabb_collision(aabb_pair):
 # Post-processing
 
 
-def simplify(mesh, sim):
+def simplify(mesh, sim, density=1.0):
     """Reduce the number of faces and vertices of the mesh.
 
     Args:
         mesh (mlab.MeshSet, mlab.Mesh): Meshlab mesh.
         sim (bool, float, str): simplification parameter.
+        density (float, optional): point cloud density. Defaults to 1.0.
 
     Raises:
         TypeError: wrong mesh type.
@@ -889,25 +904,33 @@ def simplify(mesh, sim):
 
     # sim is the target reduction percentage
     if isinstance(sim, float) and sim < 1:
+        ms = compute_aspect_ratio(ms)
         ms.simplification_quadric_edge_collapse_decimation(
             targetperc=sim,
             qualityweight=True,
-            preservenormal=True
+            preservenormal=True,
+            qualitythr=0.4,
+            planarquadric=True,
+            planarweight=0.002
         )
         ms = remove_small_components(ms)
         ms, flag = _fix_mesh(ms)
 
     # sim is the target number of faces
     elif (not isinstance(sim, bool)) and isinstance(sim, int):
+        ms = compute_aspect_ratio(ms)
         ms.simplification_quadric_edge_collapse_decimation(
             targetfacenum=sim,
             qualityweight=True,
-            preservenormal=True
+            preservenormal=True,
+            qualitythr=0.4,
+            planarquadric=True,
+            planarweight=0.002
         )
         ms = remove_small_components(ms)
         ms, flag = _fix_mesh(ms)
 
-    # sim is a multiplier of the mesh area
+    # sim is a string coontains multiplier of the mesh area
     # e.g., sim = '0.8 area'
     elif isinstance(sim, str) and sim.endswith(' area'):
         try:
@@ -917,33 +940,45 @@ def simplify(mesh, sim):
             raise ValueError(msg)
 
         geo_measure = ms.compute_geometric_measures()
-        area = geo_measure['surface_area']
+        area = abs(geo_measure['surface_area'])
+        ms = compute_aspect_ratio(ms)
         ms.simplification_quadric_edge_collapse_decimation(
             targetfacenum=int(target * area),
             qualityweight=True,
-            preservenormal=True
+            preservenormal=True,
+            qualitythr=0.4,
+            planarquadric=True,
+            planarweight=0.002
         )
         ms = remove_small_components(ms)
         ms, flag = _fix_mesh(ms)
 
     # simplify mesh iteratively
-    # unitl mesh can not longer be watertight
+    # unitl mesh can not be watertight
+    # or contains too many bad triangles
     else:
+        # initialization
         flag = True
         iter = 1
+        bad_surface_ratio = 0
+        ms, _ = simplify(ms, sim = '15 area')
 
         # get mesh area
         geo_measure = ms.compute_geometric_measures()
         area = geo_measure['surface_area']
 
-        # keep simplifying until the mesh is not watertight
-        # or the face number is too small
-        while flag and ms.current_mesh().face_number() > area:
+        # keep simplifying the mesh until it is not watertight
+        # or contains too many bad triangles
+        while flag and bad_surface_ratio < 0.1:
             ms_temp = dcp_meshset(ms)
+            ms_temp = compute_aspect_ratio(ms_temp)
             ms_temp.simplification_quadric_edge_collapse_decimation(
                 targetperc=0.8,
                 qualityweight=True,
-                preservenormal=True
+                preservenormal=True,
+                qualitythr=0.4,
+                planarquadric=True,
+                planarweight=0.002
             )
             ms_temp = remove_small_components(ms_temp)
             ms_temp, flag = _fix_mesh(ms_temp)
@@ -953,6 +988,7 @@ def simplify(mesh, sim):
             if flag:
                 ms = dcp_meshset(ms_temp)
                 iter = iter + 1
+                print(f"iteration: {iter-1}")
 
             # the simplified mesh is not watertight
             # return the last watertight mesh
@@ -960,6 +996,12 @@ def simplify(mesh, sim):
                 flag = True
                 break
 
+            # update bad_surface_ratio
+            if ms_temp.current_mesh().face_number() < 5*area:
+                ms_temp = compute_aspect_ratio(ms_temp)
+                bad_surface_ratio = compute_bad_face_ratio(ms_temp)
+
+    ms = remove_small_components(ms)
     return ms, flag
 
 
@@ -1017,7 +1059,7 @@ def _fix_mesh(ms):
     ms.remove_unreferenced_vertices()
 
     # maximum iteration: 5
-    for _ in range(5):
+    for itr in range(5):
         # delete bad faces and vertices
         ms.select_self_intersecting_faces()
         ms.delete_selected_faces_and_vertices()
@@ -1054,11 +1096,26 @@ def _fix_mesh(ms):
         except:
             ms.laplacian_smooth(stepsmoothnum=3, selected=False)
 
+        # mesh cannot be made watertight
+        # agressively simplify the mesh to remove some bad faces
+        if itr == 4:
+            ms = compute_aspect_ratio(ms)
+            ms.simplification_quadric_edge_collapse_decimation(
+                targetperc=np.random.uniform(0.55, 0.75),
+                preservenormal=True,
+                qualityweight=True,
+                qualitythr=0.4,
+                planarquadric=True,
+                planarweight=0.002
+            )
+            ms = remove_small_components(ms)
+
     return ms, False
 
 
-def _reset_quality(mesh):
-    """Set vertex quality values according to cell compartments.
+def _reset_color_quality(mesh, cmpt_mask):
+    """Set vertex colors according to cell compartments,
+    set vertex qualities based on minimum radii.
 
     The vertex quality values are used in the surface simplification
     method. A vertex with a high quality value will not be simplified 
@@ -1066,35 +1123,72 @@ def _reset_quality(mesh):
     aggressively simplified.
 
     The soma vertex quality is set to 0.01.
-    The axon vertex quality is set to 10000.
-    Other vertex quality is 10.
+    The neurite vertex quality is set to 100/r_min^2.
 
     Args:
         mesh (mlab.MeshSet or mlab.Mesh): Meshlab mesh.
+        cmpt_mask (ndarray): mask of existing compartments.
 
     Returns:
         mlab.MeshSet or mlab.Mesh: Meshlab mesh 
         with vertex quality array.
     """
 
+    # compartment colors
+    colors = np.array([
+        [0.4, 0.2, 0.6, 1],   # purple, undefined
+        [0.77, 0.3, 0.34, 1],  # red, soma
+        [0.7, 0.7, 0.7, 1],   # gray, axon
+        [0.09, 0.63, 0.52, 1],  # green, basal_dendrite
+        [0.73, 0.33, 0.83, 1],  # magenta, apical_dendrite
+        [0.97, 0.58, 0.02, 1],  # orange, custom
+        [1.0, 0.75, 0.8, 1],  # pink, unspecified_neurites
+        [0.17, 0.17, 2/3, 1]  # blue, glia_processes
+    ])
+
     # get color matrix
     m = mesh.current_mesh()
-    color_matrix = m.vertex_color_matrix()[:, :3]
+    color_matrix = m.vertex_color_matrix()
+    true_color = dcp(color_matrix)
 
-    # get soma mask according to vertex color
-    color_norm = np.linalg.norm(
-        color_matrix - np.array([0.77, 0.3, 0.34]), axis=1)
-    soma_mask = color_norm < 0.05
+    # get compartment mask list
+    undefined_mask = _set_mask_list(
+        color_matrix[:, 0], cmpt_mask[0], 1/7, 1/7)
+    axon_mask = _set_mask_list(
+        color_matrix[:, 0], cmpt_mask[2], 2/7, 1/7)
+    basal_dendrite_mask = _set_mask_list(
+        color_matrix[:, 0], cmpt_mask[3], 3/7, 1/7)
+    apical_dendrite_mask = _set_mask_list(
+        color_matrix[:, 0], cmpt_mask[4], 4/7, 1/7)
+    custom_mask = _set_mask_list(
+        color_matrix[:, 0], cmpt_mask[5], 5/7, 1/7)
+    unspecified_neurites_mask = _set_mask_list(
+        color_matrix[:, 0], cmpt_mask[6], 6/7, 1/7)
+    glia_processes_mask = _set_mask_list(
+        color_matrix[:, 0], cmpt_mask[7], 7/7, 1/14)
 
-    # get axon mask according to vertex color
-    color_norm = np.linalg.norm(
-        color_matrix - np.array([0.7, 0.7, 0.7]), axis=1)
-    axon_mask = color_norm < 0.1
+    soma_mask = ~(
+        undefined_mask | axon_mask | basal_dendrite_mask |
+        apical_dendrite_mask | custom_mask |
+        unspecified_neurites_mask | glia_processes_mask
+    )
+
+    # set vertex color
+    true_color[undefined_mask, :] = colors[0, :]
+    true_color[soma_mask, :] = colors[1, :]
+    true_color[axon_mask, :] = colors[2, :]
+    true_color[basal_dendrite_mask, :] = colors[3, :]
+    true_color[apical_dendrite_mask, :] = colors[4, :]
+    true_color[custom_mask, :] = colors[5, :]
+    true_color[unspecified_neurites_mask, :] = colors[6, :]
+    true_color[glia_processes_mask, :] = colors[7, :]
 
     # set vertex quality values
-    quality = np.ones_like(color_norm)*10
-    quality[soma_mask] = 0.01
-    quality[axon_mask] = 10000
+    r_min = color_matrix[:, 1] + color_matrix[:, 2] / 100
+    quality = 100 / r_min**2
+    quality[soma_mask] = 0.001
+    if np.any(axon_mask):
+        quality[axon_mask] = 10 * quality[axon_mask]
 
     # create mesh with vertex quality array
     m_new = mlab.Mesh(
@@ -1102,13 +1196,24 @@ def _reset_quality(mesh):
         face_matrix=m.face_matrix(),
         v_normals_matrix=m.vertex_normal_matrix(),
         f_normals_matrix=m.face_normal_matrix(),
-        v_color_matrix=m.vertex_color_matrix(),
+        v_color_matrix=true_color,
         v_quality_array=quality
     )
     ms = mlab.MeshSet()
     ms.add_mesh(m_new)
 
     return ms
+
+
+def _set_mask_list(color_matrix, cmpt_mask, color, margin):
+    """Set compartment mask list according to vertex color."""
+
+    if cmpt_mask:
+        mask_list = np.abs(color_matrix - color) < margin
+    else:
+        mask_list = np.full_like(color_matrix, False, dtype=bool)
+
+    return mask_list
 
 
 # tools
@@ -1156,6 +1261,45 @@ def mlab2tmesh(ms):
     )
 
     return tmesh
+
+
+def compute_aspect_ratio(mesh):
+    """Compute aspect ratio of the mesh surfaces.
+
+    The aspect ratio of a triangular surface is defined as Ri/Ro
+    where Ri is the radius of the circle inscribed in a triangle
+    and Ro is the radius of the circle circumscribed around the triangle.
+    The aspect ratio of a triangle lies between 0 and 1.
+    The larger aspect ratio implies the better quality of the triangle.
+    """
+
+    filter_name = "_".join((
+        'per_face_quality_according_to',
+        'triangle_shape_and_aspect_ratio'
+    ))
+    mesh.apply_filter(filter_name, metric=1)
+
+    return mesh
+
+
+def compute_bad_face_ratio(mesh):
+    """Bad faces are triangles whose aspect ratio
+    are less than 0.1.
+    """
+
+    try:
+        histo = mesh.per_face_quality_histogram(
+            histmin=0, histmax=1, areaweighted=True, binnum=10)
+        histo = histo['hist_count']
+        bad_face_ratio = histo[1] / np.sum(histo)
+    except:
+        mesh = compute_aspect_ratio(mesh)
+        histo = mesh.per_face_quality_histogram(
+            histmin=0, histmax=1, areaweighted=True, binnum=10)
+        histo = histo['hist_count']
+        bad_face_ratio = histo[1] / np.sum(histo)
+
+    return bad_face_ratio
 
 
 def show(ms):

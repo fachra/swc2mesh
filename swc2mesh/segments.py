@@ -25,20 +25,20 @@ class Segment():
             _create_points: create segment point cloud.
     """
 
-    # compartment colors
+    # encode info in color matrix
     colors = np.array([
-        [0.4, 0.2, 0.6, 0.6],   # purple, undefined
-        [0.77, 0.3, 0.34, 0.6],  # red, soma
-        [0.7, 0.7, 0.7, 0.6],   # gray, axon
-        [0.09, 0.63, 0.52, 0.6],  # green, basal_dendrite
-        [0.73, 0.33, 0.83, 0.6],  # magenta, apical_dendrite
-        [0.97, 0.58, 0.02, 0.6],  # orange, custom
-        [1.0, 0.75, 0.8, 0.6],  # pink, unspecified_neurites
-        [0.17, 0.17, 2/3, 0.6]  # blue, glia_processes
+        [1/7, 0, 0, 1],  # undefined
+        [0/7, 1, 1, 1],  # soma
+        [2/7, 0, 0, 1],  # axon
+        [3/7, 0, 0, 1],  # basal_dendrite
+        [4/7, 0, 0, 1],  # apical_dendrite
+        [5/7, 0, 0, 1],  # custom
+        [6/7, 0, 0, 1],  # unspecified_neurites
+        [7/7, 0, 0, 1],  # glia_processes
     ])
 
     def __init__(self) -> None:
-        self.color = np.array([[1], [1], [1]])
+        self.color = np.array([[1], [1], [1], [1]])
         self.points = None
         self.normals = None
         self.keep = None
@@ -87,7 +87,6 @@ class Segment():
         p = self.points[:, keep]
         n = self.normals[:, keep]
         color = np.repeat(self.color, p.shape[1], axis=1)
-
         return p, n, color
 
     def __len__(self) -> int:
@@ -173,7 +172,7 @@ class Sphere(Segment):
         # check intersection
         inner = dist < -eps
         on = (-eps <= dist) & (dist <= eps)
-        outer = dist > eps
+        outer = dist > eps*10
         out_near = (dist > eps) & (dist < 0.1*seg.r_min)
 
         return inner, on, outer, out_near
@@ -298,7 +297,7 @@ class Ellipsoid(Segment):
         # check intersection
         inner = dist < -eps
         on = (-eps <= dist) & (dist <= eps)
-        outer = dist > eps
+        outer = dist > eps*10
         out_near = (dist > eps) & (dist < 0.01)
 
         return inner, on, outer, out_near
@@ -462,7 +461,7 @@ class Cylinder(Segment):
         inner = mask_in & (dist < -eps)
         on = (mask_in & (dist >= -eps) & (dist <= eps)
               ) | (mask_updown & (dist <= 0))
-        outer = (dist > eps) | ~(mask_in & mask_updown)
+        outer = (dist > eps*10) | ~(mask_in & mask_updown)
         out_near = ((dist > eps) & (dist < 0.1*seg.r_min) & mask_in) | \
             ((points[2, :] >= self.h/2+eps)
              & (points[2, :] < self.h/2+0.1*seg.r_min)
@@ -618,7 +617,7 @@ class Contour(Segment):
         # masks
         inner = dist < -eps
         on = (dist >= -eps) & (dist <= eps)
-        outer = dist > eps
+        outer = dist > eps*10
         out_near = (dist > eps) & (dist < 0.1*seg.r_min)
 
         return inner, on, outer, out_near
@@ -776,9 +775,9 @@ class Frustum(Segment):
         """
 
         super().__init__()
-        self.color = self.colors[end['type']].reshape(4, 1)
         self.ra = start['radius']
         self.rb = end['radius']
+        self.color = self._set_color(end['type'])
         self.a = start['position'].reshape(3, 1)
         self.b = end['position'].reshape(3, 1)
         self._translation = self.a
@@ -905,15 +904,18 @@ class Frustum(Segment):
         """
 
         # number of lateral points
-        if self.r_min < 0.1:
-            npoint_lateral = int(self.density*16*(10 + 10*self.h))
+        if self.r_min < 0.2:
+            npoint_lateral = int(
+                self.density*(200 + 200*self.h)/np.sqrt(self.r_min))
+        elif self.r_min < 0.3:
+            npoint_lateral = int(self.density*(150 + 150*self.h))
         elif self.r_min < 0.5:
-            npoint_lateral = int(self.density*16*(10 + 5*self.h))
+            npoint_lateral = int(self.density*(120 + 120*self.h))
         elif self.r_min < 1:
-            npoint_lateral = int(self.density*16*(10 + 2*self.h))
+            npoint_lateral = int(self.density*(80 + 100*self.h))
         else:
-            npoint_lateral = int(self.density*16*(10 + self.h))
-        npoint_lateral = np.max([npoint_lateral, 200])
+            npoint_lateral = int(self.density*(50 + 100*self.h))
+        # npoint_lateral = np.max([npoint_lateral, 200])
 
         # create lateral points and normals
         points_lateral, theta = self._localfrustum(npoint_lateral)
@@ -1013,6 +1015,26 @@ class Frustum(Segment):
         points[2, :] = z
 
         return points, theta
+
+    def _set_color(self, type_ind):
+        """Using frustum color matrix to encode compartment color
+        and frustum's minimum radius.
+
+        The first color value encodes compartment color.
+        The second and third color values encode minimum radius. 
+        """
+
+        # get color
+        color = dcp(self.colors[type_ind].reshape(4, 1))
+
+        # get minimum
+        rmin = min(self.r_min, 1)
+        # first two decimals
+        color[1, 0] = float(int(rmin * 100) / 100)
+        # other decimals
+        color[2, 0] = (rmin - color[1, 0]) * 100
+
+        return color
 
     @property
     def axis(self):
