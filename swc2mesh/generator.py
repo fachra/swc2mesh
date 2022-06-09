@@ -508,16 +508,16 @@ class Swc2mesh():
             v_color_matrix=colors.T
         )
         ms.add_mesh(m)
-        ms.remove_duplicate_vertices()
+        ms.meshing_remove_duplicate_vertices()
         # ms.merge_close_vertices(threshold=mlab.Percentage(1))
-        ms.normalize_vertex_normals()
-        ms.smooths_normals_on_a_point_sets(k=5)
+        ms.apply_normal_normalization_per_vertex()
+        ms.apply_normal_point_cloud_smoothing(k=5)
 
         # build surface
         depth = self._depth(r_min)
         print("Building mesh ...")
         start = time.time()
-        ms.surface_reconstruction_screened_poisson(
+        ms.generate_surface_reconstruction_screened_poisson(
             depth=depth,
             preclean=True
         )
@@ -1053,7 +1053,7 @@ def _fix_mesh(ms):
     """
 
     # cleaning
-    ms.remove_duplicate_vertices()
+    ms.meshing_remove_duplicate_vertices()
     ms.remove_duplicate_faces()
     ms.remove_zero_area_faces()
     ms.remove_unreferenced_vertices()
