@@ -495,7 +495,7 @@ class Swc2mesh():
 
         if r_min <= 0.1:
             msg = " ".join((
-                f"Neuron has some extremely fine neurites ({r_min}um).",
+                f"Neuron has some extremely fine neurites (r < {r_min}um).",
                 "Manual post-cleaning might be needed."
             ))
             warnings.warn(msg, UserWarning, stacklevel=2)
@@ -508,16 +508,19 @@ class Swc2mesh():
             v_color_matrix=colors.T
         )
         ms.add_mesh(m)
-        ms.remove_duplicate_vertices()
-        # ms.merge_close_vertices(threshold=mlab.Percentage(1))
-        ms.normalize_vertex_normals()
-        ms.smooths_normals_on_a_point_sets(k=5)
+        ms.meshing_remove_duplicate_vertices()
+        bbox = ms.get_geometric_measures()['bbox']
+        ms.meshing_merge_close_vertices(
+            threshold=mlab.Percentage(10*r_min/bbox.diagonal())
+        )
+        ms.apply_normal_normalization_per_vertex()
+        ms.apply_normal_point_cloud_smoothing(k=5)
 
         # build surface
         depth = self._depth(r_min)
         print("Building mesh ...")
         start = time.time()
-        ms.surface_reconstruction_screened_poisson(
+        ms.generate_surface_reconstruction_screened_poisson(
             depth=depth,
             preclean=True
         )
@@ -529,7 +532,7 @@ class Swc2mesh():
         if simplification:
             print("Simplifying mesh ...")
             start = time.time()
-            ms, flag = simplify(ms, simplification, self.density)
+            ms, flag = simplify(ms, simplification, r_min, self.density)
             print(f"Elapsed time: {time.time() - start:.4f} s.")
         else:
             ms, flag = _fix_mesh(ms)
@@ -877,12 +880,13 @@ def _aabb_collision(aabb_pair):
 # Post-processing
 
 
-def simplify(mesh, sim, density=1.0):
+def simplify(mesh, sim, r_min=0.5, density=1.0):
     """Reduce the number of faces and vertices of the mesh.
 
     Args:
         mesh (mlab.MeshSet, mlab.Mesh): Meshlab mesh.
         sim (bool, float, str): simplification parameter.
+        r_min (float, optional): minimum radius of the cell.
         density (float, optional): point cloud density. Defaults to 1.0.
 
     Raises:
@@ -904,12 +908,12 @@ def simplify(mesh, sim, density=1.0):
 
     # sim is the target reduction percentage
     if isinstance(sim, float) and sim < 1:
-        ms = compute_aspect_ratio(ms)
-        ms.simplification_quadric_edge_collapse_decimation(
+        # ms = compute_aspect_ratio(ms)
+        ms.meshing_decimation_quadric_edge_collapse(
             targetperc=sim,
             qualityweight=True,
             preservenormal=True,
-            qualitythr=0.4,
+            qualitythr=0.3,
             planarquadric=True,
             planarweight=0.002
         )
@@ -918,12 +922,12 @@ def simplify(mesh, sim, density=1.0):
 
     # sim is the target number of faces
     elif (not isinstance(sim, bool)) and isinstance(sim, int):
-        ms = compute_aspect_ratio(ms)
-        ms.simplification_quadric_edge_collapse_decimation(
+        # ms = compute_aspect_ratio(ms)
+        ms.meshing_decimation_quadric_edge_collapse(
             targetfacenum=sim,
             qualityweight=True,
             preservenormal=True,
-            qualitythr=0.4,
+            qualitythr=0.3,
             planarquadric=True,
             planarweight=0.002
         )
@@ -939,14 +943,18 @@ def simplify(mesh, sim, density=1.0):
             msg = f"Invalid simplification parameter: {sim}."
             raise ValueError(msg)
 
-        geo_measure = ms.compute_geometric_measures()
+        geo_measure = ms.get_geometric_measures()
         area = abs(geo_measure['surface_area'])
-        ms = compute_aspect_ratio(ms)
-        ms.simplification_quadric_edge_collapse_decimation(
-            targetfacenum=int(target * area),
+        # ms = compute_aspect_ratio(ms)
+        if int(target * area) < ms.current_mesh().vertex_number():
+            targetfacenum = int(target * area)
+        else:
+            targetfacenum = int(0.95*ms.current_mesh().vertex_number())
+        ms.meshing_decimation_quadric_edge_collapse(
+            targetfacenum=targetfacenum,
             qualityweight=True,
             preservenormal=True,
-            qualitythr=0.4,
+            qualitythr=0.3,
             planarquadric=True,
             planarweight=0.002
         )
@@ -961,19 +969,44 @@ def simplify(mesh, sim, density=1.0):
         flag = True
         iter = 1
         bad_surface_ratio = 0
-        ms, _ = simplify(ms, sim = '15 area')
+        if ms.current_mesh().vertex_number() > 1e6:
+            ratio = 8e5 / ms.current_mesh().vertex_number()
+            ms, _ = simplify(ms, sim=ratio)
+        elif ms.current_mesh().vertex_number() > 7e5:
+            ms, _ = simplify(ms, sim=0.5)
+
+        # isotropic explicit remeshing to increase mesh aspect ratio
+        if r_min < 0.15:
+            targetlen = 0.15
+        else:
+            targetlen = r_min
+        d = ms.get_geometric_measures()
+        bbox = d['bbox']
+        ms.meshing_isotropic_explicit_remeshing(
+            iterations = 7,
+            adaptive = True,
+            targetlen = mlab.Percentage(100*targetlen/bbox.diagonal()),
+            checksurfdist = False
+        )
+        ms, flag = simplify(ms, sim=0.5)
 
         # get mesh area
-        geo_measure = ms.compute_geometric_measures()
+        geo_measure = ms.get_geometric_measures()
         area = geo_measure['surface_area']
 
         # keep simplifying the mesh until it is not watertight
         # or contains too many bad triangles
-        while flag and bad_surface_ratio < 0.1:
+        while flag and (bad_surface_ratio < 0.13) and (ms.current_mesh().vertex_number() > 5000):
             ms_temp = dcp_meshset(ms)
             ms_temp = compute_aspect_ratio(ms_temp)
-            ms_temp.simplification_quadric_edge_collapse_decimation(
-                targetperc=0.8,
+            if ms.current_mesh().vertex_number() < 5e4:
+                targetperc = 0.89
+            elif ms.current_mesh().vertex_number() > 5e5:
+                targetperc = 0.75
+            else:
+                targetperc = 0.8
+            ms_temp.meshing_decimation_quadric_edge_collapse(
+                targetperc=targetperc,
                 qualityweight=True,
                 preservenormal=True,
                 qualitythr=0.4,
@@ -997,9 +1030,8 @@ def simplify(mesh, sim, density=1.0):
                 break
 
             # update bad_surface_ratio
-            if ms_temp.current_mesh().face_number() < 5*area:
-                ms_temp = compute_aspect_ratio(ms_temp)
-                bad_surface_ratio = compute_bad_face_ratio(ms_temp)
+            ms_temp = compute_aspect_ratio(ms_temp)
+            bad_surface_ratio = compute_bad_face_ratio(ms_temp)
 
     ms = remove_small_components(ms)
     return ms, flag
@@ -1029,8 +1061,8 @@ def remove_small_components(mesh):
         raise TypeError("Unknown mesh type.")
 
     # only keep the largest component
-    ms.select_small_disconnected_component(nbfaceratio=0.99)
-    ms.delete_selected_faces_and_vertices()
+    ms.compute_selection_by_small_disconnected_components_per_face(nbfaceratio=0.99)
+    ms.meshing_remove_selected_vertices_and_faces()
 
     if isinstance(mesh, mlab.MeshSet):
         res = ms
@@ -1053,54 +1085,60 @@ def _fix_mesh(ms):
     """
 
     # cleaning
-    ms.remove_duplicate_vertices()
-    ms.remove_duplicate_faces()
-    ms.remove_zero_area_faces()
-    ms.remove_unreferenced_vertices()
+    ms.meshing_remove_duplicate_vertices()
+    ms.meshing_remove_duplicate_faces()
+    ms.meshing_remove_null_faces()
+    ms.meshing_remove_unreferenced_vertices()
 
     # maximum iteration: 5
     for itr in range(5):
         # delete bad faces and vertices
-        ms.select_self_intersecting_faces()
-        ms.delete_selected_faces_and_vertices()
-        ms.remove_t_vertices()
-        ms.remove_t_vertices()
-        ms.repair_non_manifold_edges()
-        ms.repair_non_manifold_edges()
+        ms.compute_selection_by_self_intersections_per_face()
+        ms.meshing_remove_selected_vertices_and_faces()
+        ms.meshing_remove_t_vertices()
+        ms.meshing_remove_t_vertices()
+        ms.meshing_repair_non_manifold_edges()
+        ms.meshing_repair_non_manifold_edges()
 
         # close holes
         try:
-            ms.close_holes()
-            ms.laplacian_smooth(stepsmoothnum=6, selected=True)
+            ms.meshing_close_holes()
+            ms.apply_coord_laplacian_smoothing(stepsmoothnum=2, selected=True)
         except:
-            ms.laplacian_smooth(stepsmoothnum=3, selected=False)
+            ms.apply_coord_laplacian_smoothing(stepsmoothnum=4, selected=False)
 
         # delete bad faces and vertices
-        ms.select_self_intersecting_faces()
-        ms.delete_selected_faces_and_vertices()
-        ms.remove_t_vertices()
-        ms.remove_t_vertices()
-        ms.repair_non_manifold_edges()
-        ms.repair_non_manifold_edges()
+        ms.compute_selection_by_self_intersections_per_face()
+        ms.meshing_remove_selected_vertices_and_faces()
+        ms.meshing_remove_t_vertices()
+        ms.meshing_remove_t_vertices()
+        ms.meshing_repair_non_manifold_edges()
+        ms.meshing_repair_non_manifold_edges()
 
         # close holes
         try:
-            ms.close_holes()
-            ms.close_holes()
-            res = ms.close_holes()
+            for _ in range(4):
+                ms.meshing_close_holes()
+            res = ms.meshing_close_holes()
             # mesh is watertight, exit
             if res['closed_holes']+res['new_faces'] == 0:
                 return ms, True
             else:
-                ms.laplacian_smooth(stepsmoothnum=3, selected=False)
+                ms.apply_coord_laplacian_smoothing(stepsmoothnum=1, selected=False)
         except:
-            ms.laplacian_smooth(stepsmoothnum=3, selected=False)
+            ms.apply_coord_laplacian_smoothing(stepsmoothnum=1, selected=False)
 
         # mesh cannot be made watertight
         # agressively simplify the mesh to remove some bad faces
-        if itr == 4:
+        if itr >= 2 and ms.current_mesh().vertex_number()<1.5e5:
+            ms.meshing_decimation_quadric_edge_collapse(
+                targetperc=np.random.uniform(0.87, 0.93),
+                preservenormal=True
+            )
+            ms = remove_small_components(ms)
+        elif itr == 4 and ms.current_mesh().vertex_number()>1.5e5:
             ms = compute_aspect_ratio(ms)
-            ms.simplification_quadric_edge_collapse_decimation(
+            ms.meshing_decimation_quadric_edge_collapse(
                 targetperc=np.random.uniform(0.55, 0.75),
                 preservenormal=True,
                 qualityweight=True,
@@ -1185,19 +1223,24 @@ def _reset_color_quality(mesh, cmpt_mask):
 
     # set vertex quality values
     r_min = color_matrix[:, 1] + color_matrix[:, 2] / 100
-    quality = 100 / r_min**2
-    quality[soma_mask] = 0.001
+    quality = 10 / r_min
+    quality[r_min <= 0.05] = 30 / r_min[r_min <= 0.05]
+    quality[r_min <= 0.03] = 100 / r_min[r_min <= 0.03]
+    quality[r_min <= 0.02] = 150 / r_min[r_min <= 0.02]
+    quality[r_min <= 0.01] = 200 / r_min[r_min <= 0.01]
+    quality[soma_mask] = 1
     if np.any(axon_mask):
-        quality[axon_mask] = 10 * quality[axon_mask]
+        quality[axon_mask] = 2 * quality[axon_mask]
 
     # create mesh with vertex quality array
     m_new = mlab.Mesh(
         vertex_matrix=m.vertex_matrix(),
         face_matrix=m.face_matrix(),
+        edge_matrix=m.edge_matrix(),
         v_normals_matrix=m.vertex_normal_matrix(),
         f_normals_matrix=m.face_normal_matrix(),
         v_color_matrix=true_color,
-        v_quality_array=quality
+        v_scalar_array=quality
     )
     ms = mlab.MeshSet()
     ms.add_mesh(m_new)
@@ -1273,10 +1316,7 @@ def compute_aspect_ratio(mesh):
     The larger aspect ratio implies the better quality of the triangle.
     """
 
-    filter_name = "_".join((
-        'per_face_quality_according_to',
-        'triangle_shape_and_aspect_ratio'
-    ))
+    filter_name = "compute_scalar_by_aspect_ratio_per_face"
     mesh.apply_filter(filter_name, metric=1)
 
     return mesh
@@ -1288,14 +1328,14 @@ def compute_bad_face_ratio(mesh):
     """
 
     try:
-        histo = mesh.per_face_quality_histogram(
-            histmin=0, histmax=1, areaweighted=True, binnum=10)
+        histo = mesh.get_scalar_histogram_per_face(
+            histmin=0, histmax=1, binnum=3)
         histo = histo['hist_count']
         bad_face_ratio = histo[1] / np.sum(histo)
     except:
         mesh = compute_aspect_ratio(mesh)
-        histo = mesh.per_face_quality_histogram(
-            histmin=0, histmax=1, areaweighted=True, binnum=10)
+        histo = mesh.get_scalar_histogram_per_face(
+            histmin=0, histmax=1, binnum=3)
         histo = histo['hist_count']
         bad_face_ratio = histo[1] / np.sum(histo)
 

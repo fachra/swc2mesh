@@ -664,7 +664,7 @@ class Contour(Segment):
         m = mlab.Mesh(vertex_matrix=p.T)
         ms.add_mesh(m)
         ms.convex_hull()
-        out_dict = ms.compute_geometric_measures()
+        out_dict = ms.get_geometric_measures()
         ms.poisson_disk_sampling(
             samplenum=int(self.density*out_dict['surface_area'])
         )
@@ -719,7 +719,7 @@ class Contour(Segment):
         ms.add_mesh(m)
         ms.convex_hull()
 
-        return ms.compute_geometric_measures()
+        return ms.get_geometric_measures()
 
     @property
     def area(self):
